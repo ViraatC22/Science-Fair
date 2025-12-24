@@ -2,11 +2,19 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from scipy import stats
-from scipy.ndimage import gaussian_filter, rotate
 import time
 import plotly.graph_objects as go
 import plotly.figure_factory as ff
 import json
+import sys
+import os
+
+# Add parent directory to path so we can import modules
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from neural_network.predictor import ModelManager
+from simulation.physics import run_simulation_logic, LITERATURE_DATA
+from optimization.genetic import GeneticOptimizer, train_initial_model
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -18,224 +26,14 @@ st.set_page_config(
 # Set the default plotly template
 PLOTLY_TEMPLATE = "plotly_white"
 
-# --- LITERATURE DATA (From your document) ---
-LITERATURE_DATA = {
-    "Tero_2010_MST_Ratio": {"mean": 1.75, "std": 0.30},
-    "Tero_2010_Transport_Ratio": {"mean": 0.85, "std": 0.04},
-    "AutoAnalysis_TotalLength": {"mean": 550, "std": 50}, 
-    "AutoAnalysis_NodeDensity": {"mean": 16, "std": 1},
-    "Kay_2022_GrowthRate_High": {"mean": 10.0, "std": 1.0}
-}
+# --- INITIALIZE MODULES IN SESSION STATE ---
+if 'model_manager' not in st.session_state:
+    st.session_state.model_manager = ModelManager(input_dim=17, output_dim=5)
 
-# --- 1. NEW: UNIVERSAL GEOMETRY GENERATOR ---
+if 'optimizer' not in st.session_state:
+    st.session_state.optimizer = GeneticOptimizer(st.session_state.model_manager)
 
-def generate_micropillar_geometry(params):
-    """
-    Generates the 3D numpy matrix for the micropillar array
-    based on the new CAD image, including the small channel nodes.
-    """
-    grid_size = 60 # Main grid resolution
-    scaffold_matrix = np.zeros((grid_size, grid_size, grid_size))
-    
-    # Get normalized dimensions from params
-    n_pillars = params['pillar_count']
-    pillar_width_px = int(grid_size * (params['pillar_size_mm'] / 200.0))
-    channel_width_px = int(grid_size * (params['channel_width_mm'] / 200.0))
-    node_width_px = int(grid_size * (params['channel_node_size_mm'] / 200.0))
-    
-    if pillar_width_px == 0 or channel_width_px == 0: 
-        return np.ones((grid_size, grid_size, grid_size)), np.ones((grid_size, grid_size)), np.zeros((grid_size, grid_size, grid_size))
-
-    # --- 1. Create Base ---
-    base_height = int(grid_size * 0.2)
-    scaffold_matrix[:, :, :base_height] = 1.0
-    
-    # --- 2. Create Large Pillars ---
-    pillar_height = int(grid_size * 0.8)
-    step_size = pillar_width_px + channel_width_px
-    
-    pillar_starts = [channel_width_px + i * step_size for i in range(n_pillars)]
-    
-    for x_start in pillar_starts:
-        x_end = x_start + pillar_width_px
-        for y_start in pillar_starts:
-            y_end = y_start + pillar_width_px
-            if x_end <= grid_size and y_end <= grid_size:
-                scaffold_matrix[x_start:x_end, y_start:y_end, base_height:pillar_height] = 1.0
-
-    # --- 3. Create Small Channel Nodes (The "Dark Blue" Blocks) ---
-    if node_width_px > 0:
-        node_height = base_height + int((pillar_height - base_height) * 0.4)
-        
-        # Calculate intersection centers
-        channel_centers = [int(i * step_size + channel_width_px / 2) for i in range(n_pillars + 1)]
-        
-        for cx in channel_centers:
-            for cy in channel_centers:
-                x_start = max(0, cx - node_width_px // 2)
-                x_end = min(grid_size, cx + node_width_px // 2)
-                y_start = max(0, cy - node_width_px // 2)
-                y_end = min(grid_size, cy + node_width_px // 2)
-                
-                scaffold_matrix[x_start:x_end, y_start:y_end, base_height:node_height] = 1.0
-
-    # --- 4. Define the final matrices ---
-    pillar_tops = (scaffold_matrix[:, :, pillar_height-1] > 0).astype(float)
-    channel_matrix = 1.0 - scaffold_matrix
-    
-    return scaffold_matrix, pillar_tops, channel_matrix
-
-# --- 2. METRIC CALCULATION (Now Context-Aware) ---
-
-def _make_fibers2d(n, density=0.65):
-    acc = np.zeros((n, n))
-    for s in (2, 4, 8):
-        noise = np.random.rand(n, n) - 0.5
-        anis = gaussian_filter(noise, sigma=(s, 1))
-        ang = np.random.uniform(0, 180)
-        rot = rotate(anis, angle=ang, reshape=False, order=1, mode='reflect')
-        acc += rot
-    acc = np.abs(acc)
-    acc /= (acc.max() + 1e-6)
-    thr = np.quantile(acc, 1.0 - density)
-    acc = (acc > thr).astype(float)
-    acc = gaussian_filter(acc, sigma=1.2)
-    return acc
-
-def _make_fibers3d(n, n_orients=4):
-    vol = np.zeros((n, n, n))
-    base_sig = (1, 4, 1)
-    for i in range(n_orients):
-        noise = np.random.rand(n, n, n) - 0.5
-        sig = (base_sig[i % 3], base_sig[(i+1) % 3], base_sig[(i+2) % 3])
-        vol += gaussian_filter(noise, sigma=sig)
-    vol = np.abs(vol)
-    vol /= (vol.max() + 1e-6)
-    return vol
-
-def compute_base_metrics(params):
-    """Computes all shared dependent variables from your list."""
-    metrics = {}
-    base_growth = (params['dmem_glucose'] / 25.0) * (params['dmem_glutamine'] / 45.0)
-    ion_effect = params['ion_ca'] / 1.8 
-    light_effect = 1.0 if params['light_lumens'] == 0 else 0.5
-    
-    metrics['avg_growth_rate'] = base_growth * ion_effect * light_effect * np.random.uniform(2.0, 8.0)
-    metrics['total_network_length'] = np.random.uniform(450, 600) * (1.0 + params['initial_mass_g'])
-    metrics['num_junctions'] = int(metrics['total_network_length'] / 30.0 + np.random.randint(-5, 5))
-    metrics['num_edges'] = int(metrics['num_junctions'] * 1.5 + np.random.randint(-5, 5))
-    metrics['avg_branches_per_node'] = metrics['num_edges'] / (metrics['num_junctions'] + 1e-6)
-    metrics['graph_density'] = metrics['num_edges'] / (metrics['num_junctions'] * (metrics['num_junctions'] - 1) + 1e-6)
-    metrics['largest_component_size'] = metrics['total_network_length'] * np.random.uniform(0.8, 1.0)
-    cov_base = 0.6 * light_effect * (1.0 - float(params.get('elasticity', 0.5)))
-    cov_noise = np.random.uniform(-0.05, 0.05)
-    metrics['coverage_fraction'] = float(np.clip(cov_base + cov_noise, 0.1, 0.95))
-    
-    # --- BUG FIX: Added coverage_fraction back ---
-    metrics['coverage_fraction'] = np.random.uniform(0.5, 0.75) 
-    
-    metrics['dye_diffusion_rate'] = np.random.uniform(0.5, 1.5) * ion_effect
-    metrics['time_to_connection'] = 60.0 / (metrics['avg_growth_rate'] + 1e-6) # minutes
-    metrics['time_to_reconnection'] = metrics['time_to_connection'] * np.random.uniform(1.2, 1.5) # minutes
-    metrics['mst_ratio'] = np.random.normal(1.75, 0.3) * (1.0 / (params['elasticity'] + 0.5)) 
-    metrics['path_efficiency'] = np.random.normal(0.85, 0.04)
-    metrics['param_model_type'] = params['model_type']
-    metrics['param_stiffness'] = params['scaffold_stiffness_kPa']
-    return metrics
-
-def compute_2d_pillar_top_metrics(params):
-    metrics = compute_base_metrics(params)
-    metrics['fractal_dimension'] = np.random.uniform(1.85, 1.98) # 2D Fractal Dim
-    metrics['mean_tortuosity'] = np.random.uniform(1.3, 1.5)
-    metrics['pillar_adhesion_index'] = np.random.uniform(0.7, 0.9) # New metric
-    metrics['penetration_depth'] = 0.0
-    return metrics
-
-def compute_3d_channel_diffusion_metrics(params):
-    metrics = compute_base_metrics(params)
-    n, p, c = params['pillar_count'], params['pillar_size_mm'], params['channel_width_mm']
-    node_w = params['channel_node_size_mm']
-    
-    total_area = (n*p + (n+1)*c)**2
-    pillar_area = (n*p)**2
-    node_area = ((n+1)**2) * (node_w**2)
-    void_area = total_area - pillar_area - node_area
-    phi = void_area / total_area
-    
-    kappa = (phi**3) / (5.0 * (1-phi)**2 * (np.random.uniform(1800, 2200)**2)) # Isotropic Kappa
-    tortuosity = 1.0 / np.sqrt(phi)
-    
-    metrics['fractal_dimension'] = np.random.uniform(2.2, 2.4) # 3D Fractal Dim
-    metrics['mean_tortuosity'] = tortuosity + np.random.uniform(0.1, 0.3)
-    metrics['porosity_phi'] = phi
-    metrics['permeability_kappa_iso'] = kappa # Isotropic
-    metrics['Deff'] = (2.0e-9) / tortuosity
-    metrics['Eeff'] = params['scaffold_stiffness_kPa'] * (1.0 - phi)**2
-    metrics['penetration_depth'] = params['media_depth_mm'] * np.random.uniform(0.5, 1.0)
-    return metrics
-
-def compute_3d_channel_flow_metrics(params):
-    metrics = compute_base_metrics(params)
-    n, p, c = params['pillar_count'], params['pillar_size_mm'], params['channel_width_mm']
-    node_w = params['channel_node_size_mm']
-    
-    total_area = (n*p + (n+1)*c)**2
-    pillar_area = (n*p)**2
-    node_area = ((n+1)**2) * (node_w**2)
-    void_area = total_area - pillar_area - node_area
-    phi = void_area / total_area
-    
-    kappa_x = (phi**3) / (5.0 * (1-phi)**2 * (np.random.uniform(1800, 2000)**2))
-    kappa_y = (phi**3) / (5.0 * (1-phi)**2 * (np.random.uniform(1900, 2100)**2))
-    tortuosity = 1.0 + 0.5 * (1-phi)
-    
-    metrics['fractal_dimension'] = np.random.uniform(2.0, 2.2)
-    metrics['mean_tortuosity'] = tortuosity + np.random.uniform(0.1, 0.2)
-    metrics['porosity_phi'] = phi
-    metrics['permeability_kappa_X'] = kappa_x # Anisotropic
-    metrics['permeability_kappa_Y'] = kappa_y # Anisotropic
-    metrics['Deff'] = (2.0e-9) / tortuosity
-    metrics['Keff'] = params['scaffold_stiffness_kPa'] * (1.0 - phi) * (1.0 + params['elasticity'])
-    metrics['printability_min_pore'] = params['channel_width_mm'] - params['channel_node_size_mm']
-    return metrics
-
-# --- 3. MAIN SIMULATION RUNNER ---
-
-def run_slime_simulation(params, model_type):
-    time.sleep(1.0)
-    
-    scaffold_matrix, pillar_tops, channel_matrix = generate_micropillar_geometry(params)
-    
-    if model_type == "2.5D Surface (Pillar Tops)":
-        fibers2d = _make_fibers2d(pillar_tops.shape[0])
-        growth_data = np.clip(0.6 * pillar_tops + 1.2 * fibers2d, 0, 1.5)
-        scaffold_data = scaffold_matrix 
-        metrics = compute_2d_pillar_top_metrics(params)
-        
-    elif model_type == "3D Porous (Channel Diffusion)":
-        fibers3d = _make_fibers3d(channel_matrix.shape[0], 5)
-        growth_data = channel_matrix * np.clip(fibers3d * gaussian_filter(np.random.rand(60, 60, 60), sigma=2), 0, 1.0)
-        scaffold_data = scaffold_matrix
-        metrics = compute_3d_channel_diffusion_metrics(params)
-        
-    elif model_type == "3D Structured (Channel Flow)":
-        fibers3d = _make_fibers3d(channel_matrix.shape[0], 3)
-        growth_data = channel_matrix * np.clip(fibers3d * gaussian_filter(np.random.rand(60, 60, 60), sigma=3), 0, 1.0)
-        scaffold_data = scaffold_matrix
-        metrics = compute_3d_channel_flow_metrics(params)
-    
-    flat_metrics = metrics.copy()
-    for key, value in params.items():
-        if key not in flat_metrics:
-            flat_metrics[f"param_{key}"] = value
-            
-    results = {
-        "params": params, "model_type": model_type, "growth_data": growth_data, 
-        "scaffold_data": scaffold_data, "metrics": flat_metrics
-    }
-    return results
-
-# --- 4. PLOT GENERATORS ---
+# --- PLOT GENERATORS ---
 def get_placeholder_radar_chart(metrics):
     categories = ['Permeability', 'Coverage', 'Stiffness', 'Redundancy', 'Printability']
     p_k = metrics.get('permeability_kappa_iso', metrics.get('permeability_kappa_X', 0))
@@ -286,49 +84,7 @@ def get_placeholder_anisotropy_plot():
     fig.update_layout(title="Anisotropy Map (D∥ vs D⊥)", height=400, template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="var(--text)"), margin=dict(l=10, r=10, t=50, b=10))
     return fig
 
-# --- 6. OPTIMIZATION ---
-def _objective(m, wc, wp, ws, wt):
-    p = m.get('permeability_kappa_iso', m.get('permeability_kappa_X', 0))
-    p = float(p) * 1e12
-    c = float(m.get('coverage_fraction', 0))
-    s = float(m.get('Eeff', m.get('Keff', 0))) / 50.0
-    t = float(m.get('mean_tortuosity', 1.0))
-    return wc*c + wp*p + ws*s - wt*t
-
-def optimize_matrix(params, model_type, wc, wp, ws, wt):
-    pc = int(params['pillar_count'])
-    ps = float(params['pillar_size_mm'])
-    cw = float(params['channel_width_mm'])
-    ns = float(params['channel_node_size_mm'])
-    pc_vals = [max(4, min(20, v)) for v in {pc-2, pc, pc+2}]
-    ps_vals = [max(10.0, min(50.0, v)) for v in {ps-10, ps-5, ps, ps+5, ps+10}]
-    cw_vals = [max(5.0, min(30.0, v)) for v in {cw-5, cw, cw+5, cw+10}]
-    ns_vals = [max(0.0, min(15.0, v)) for v in {ns-3, ns, ns+3}]
-    best = None
-    best_m = None
-    for a in pc_vals:
-        for b in ps_vals:
-            for c2 in cw_vals:
-                for d in ns_vals:
-                    cand = dict(params)
-                    cand['pillar_count'] = int(a)
-                    cand['pillar_size_mm'] = float(b)
-                    cand['channel_width_mm'] = float(c2)
-                    cand['channel_node_size_mm'] = float(d)
-                    if model_type == "3D Porous (Channel Diffusion)":
-                        m = compute_3d_channel_diffusion_metrics(cand)
-                    elif model_type == "3D Structured (Channel Flow)":
-                        m = compute_3d_channel_flow_metrics(cand)
-                    else:
-                        m = compute_2d_pillar_top_metrics(cand)
-                    score = _objective(m, wc, wp, ws, wt)
-                    if (best is None) or (score > best):
-                        best = score
-                        best_m = m
-                        best_params = cand
-    return best_params, best_m, best
-
-# --- 5. SUMMARY DISPLAYS (Now based on CAD params) ---
+# --- SUMMARY DISPLAYS ---
 def display_structured_flow_summary(metrics, params):
     st.markdown("#### 📋 Input Parameters")
     st.markdown(f"""
@@ -397,7 +153,6 @@ def display_pillar_top_summary(metrics, params):
     c2.metric("Avg. Growth Rate", f"{metrics['avg_growth_rate']:.1f} mm/hr")
     c3.metric("Junctions", f"{metrics['num_junctions']}")
     c4, c5, c6 = st.columns(3)
-    # --- BUG FIX: This metric 'coverage_fraction' was missing but is now fixed in compute_base_metrics ---
     c4.metric("Coverage", f"{metrics['coverage_fraction']:.1%}") 
     c5.metric("Fractal Dimension (Df)", f"{metrics['fractal_dimension']:.2f}")
     c6.metric("Pillar Adhesion", f"{metrics['pillar_adhesion_index']:.2f}")
@@ -580,7 +335,7 @@ if run_button:
     }
     
     with st.spinner("Running simulation... (Computing specialized metrics...)"):
-        new_result = run_slime_simulation(parameters, model_type)
+        new_result = run_simulation_logic(parameters, model_type)
     
     st.session_state.run_history.append(new_result['metrics']) # Append metrics to history
     st.session_state.latest_result_full = new_result # Store full result for viz
@@ -860,17 +615,27 @@ if 'latest_result_full' in st.session_state:
                 wp = st.slider("Weight: Permeability", 0.0, 2.0, 1.0, 0.1)
                 ws = st.slider("Weight: Stiffness", 0.0, 2.0, 0.5, 0.1)
                 wt = st.slider("Penalty: Tortuosity", 0.0, 2.0, 1.0, 0.1)
-                if st.button("Run Optimizer", key="opt_run"):
-                    bp, bm, score = optimize_matrix(params, model_type, wc, wp, ws, wt)
-                    st.success("✓ Optimized structure computed")
+                
+                if st.button("Run Genetic Optimizer", key="opt_run"):
+                    # Use the Genetic Optimizer instead of the loop
+                    with st.spinner("Running Genetic Algorithm..."):
+                        best_params, best_fitness, history = st.session_state.optimizer.run_optimization(model_type, pop_size=30, generations=10)
+                        
+                    st.success(f"✓ Optimized structure computed (Fitness: {best_fitness:.2f})")
+                    
+                    # Compute metrics for best params
+                    bm = run_simulation_logic(best_params, model_type)['metrics']
+                    
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Coverage", f"{bm.get('coverage_fraction', 0):.1%}")
                     p_k = bm.get('permeability_kappa_iso', bm.get('permeability_kappa_X', 0))
                     c2.metric("Permeability", f"{p_k:.1e} m²")
                     c3.metric("Tortuosity", f"{bm.get('mean_tortuosity', 0):.2f}")
-                    st.json({k: bp[k] for k in ['pillar_count','pillar_size_mm','channel_width_mm','channel_node_size_mm']})
+                    
+                    st.json({k: best_params[k] for k in ['pillar_count','pillar_size_mm','channel_width_mm','channel_node_size_mm']})
+                    
                     if st.button("Run Simulation With Best", key="opt_apply"):
-                        new_r = run_slime_simulation(bp, model_type)
+                        new_r = run_simulation_logic(best_params, model_type)
                         st.session_state.run_history.append(new_r['metrics'])
                         st.session_state.latest_result_full = new_r
                         st.success("✓ Simulation run with optimized parameters")
@@ -881,9 +646,13 @@ if 'latest_result_full' in st.session_state:
                     st.success("✓ System stable")
             
             st.markdown("### 🤖 Machine Learning Tools")
-            with st.expander("🎯 Surrogate Modeling", expanded=False):
-                if st.button("Train Surrogate Model", key="ml_train"):
-                    st.success("✓ Model trained (R² = 0.94)")
+            with st.expander("🎯 Surrogate Modeling", expanded=True):
+                st.info("Train a Neural Network to predict metrics instantly, bypassing the simulation steps.")
+                if st.button("Train Surrogate Model (PyTorch)", key="ml_train"):
+                    with st.spinner("Training Neural Network on synthetic data..."):
+                        loss = train_initial_model(st.session_state.model_manager, n_samples=500)
+                    st.success(f"✓ Model trained (Final Loss: {loss:.4f})")
+                    st.session_state.model_trained = True
             
             with st.expander("📈 Feature Importance (SHAP)", expanded=False):
                 if st.button("Generate SHAP Plot", key="shap"):
