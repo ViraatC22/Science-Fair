@@ -8,13 +8,68 @@ import plotly.figure_factory as ff
 import json
 import sys
 import os
+import torch
+import io
+import zipfile
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
 # Add parent directory to path so we can import modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from neural_network.predictor import ModelManager
-from simulation.physics import run_simulation_logic, LITERATURE_DATA
-from optimization.genetic import GeneticOptimizer, train_initial_model
+from simulation.physics import run_simulation_logic, LITERATURE_DATA, compute_metrics
+try:
+    from backend.nn import train_surrogate, gradient_sensitivity
+except ModuleNotFoundError:
+    import importlib.util
+    nn_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'backend', 'nn.py'))
+    nn_spec = importlib.util.spec_from_file_location("backend_nn", nn_path)
+    backend_nn = importlib.util.module_from_spec(nn_spec)
+    nn_spec.loader.exec_module(backend_nn)
+    train_surrogate = backend_nn.train_surrogate
+    gradient_sensitivity = backend_nn.gradient_sensitivity
+try:
+    from backend.opt import sample_params as opt_sample_params, validate_params as opt_validate_params, to_vector as opt_to_vector, global_search as opt_global_search
+except ModuleNotFoundError:
+    import importlib.util
+    opt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'backend', 'opt.py'))
+    opt_spec = importlib.util.spec_from_file_location("backend_opt", opt_path)
+    backend_opt = importlib.util.module_from_spec(opt_spec)
+    opt_spec.loader.exec_module(backend_opt)
+    opt_sample_params = backend_opt.sample_params
+    opt_validate_params = backend_opt.validate_params
+    opt_to_vector = backend_opt.to_vector
+    opt_global_search = backend_opt.global_search
+    OPT_ORDER = backend_opt.ORDER
+    OPT_PARAM_RANGES = backend_opt.PARAM_RANGES
+if 'OPT_ORDER' not in globals():
+    try:
+        from backend.opt import ORDER as OPT_ORDER, PARAM_RANGES as OPT_PARAM_RANGES
+    except Exception:
+        pass
+try:
+    from backend.stats import normality as stats_normality, fit_gaussian as stats_fit_gaussian, ci_mean as stats_ci_mean, compare as stats_compare, power as stats_power
+except ModuleNotFoundError:
+    import importlib.util
+    stats_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'backend', 'stats.py'))
+    stats_spec = importlib.util.spec_from_file_location("backend_stats", stats_path)
+    backend_stats = importlib.util.module_from_spec(stats_spec)
+    stats_spec.loader.exec_module(backend_stats)
+    stats_normality = backend_stats.normality
+    stats_fit_gaussian = backend_stats.fit_gaussian
+    stats_ci_mean = backend_stats.ci_mean
+    stats_compare = backend_stats.compare
+    stats_power = backend_stats.power
+try:
+    import backend.vis as vis
+except ModuleNotFoundError:
+    import importlib.util
+    vis_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'backend', 'vis.py'))
+    vis_spec = importlib.util.spec_from_file_location("backend_vis", vis_path)
+    backend_vis = importlib.util.module_from_spec(vis_spec)
+    vis_spec.loader.exec_module(backend_vis)
+    vis = backend_vis
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -25,6 +80,60 @@ st.set_page_config(
 
 # Set the default plotly template
 PLOTLY_TEMPLATE = "plotly_white"
+
+# --- LOCAL ML/OPT HELPERS ---
+class ModelManager:
+    def __init__(self, input_dim=17, output_dim=1):
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+
+class GeneticOptimizer:
+    def __init__(self, model_manager=None):
+        self.model_manager = model_manager
+    def run_optimization(self, model_type, pop_size=30, generations=10):
+        rng = np.random.default_rng(42)
+        best = None
+        tries = 0
+        n_search = 4000
+        while tries < n_search:
+            p = opt_sample_params(rng)
+            p["model_type"] = model_type
+            ok, _ = opt_validate_params(p)
+            if ok:
+                r = run_metrics_only(p, model_type)
+                y = r["metrics"]["avg_growth_rate"]
+                if best is None or y > best[0]:
+                    best = (y, p)
+            tries += 1
+        return best[1], best[0], []
+
+def train_initial_model(model_manager, n_samples=500):
+    rng = np.random.default_rng(42)
+    X_list = []
+    y_list = []
+    tries = 0
+    while len(y_list) < n_samples and tries < n_samples * 10:
+        p = opt_sample_params(rng)
+        p["model_type"] = "3D Structured (Channel Flow)"
+        ok, _ = opt_validate_params(p)
+        if ok:
+            r = run_metrics_only(p, p["model_type"])
+            y = r["metrics"]["avg_growth_rate"]
+            X_list.append(opt_to_vector(p))
+            y_list.append(y)
+        tries += 1
+    X = np.vstack(X_list).astype(np.float32)
+    y = np.array(y_list, dtype=np.float32).reshape(-1, 1)
+    m, sc, _ = train_surrogate(X, y, seed=42, epochs=50, snapshot_stride=10)
+    Xs = sc.transform(X).astype(np.float32)
+    with torch.no_grad():
+        pred, _, _ = m(torch.tensor(Xs))
+        loss = torch.nn.functional.mse_loss(pred, torch.tensor(y))
+    return float(loss.detach().cpu().numpy())
+
+def run_metrics_only(params, model_type):
+    m = compute_metrics(params, model_type)
+    return {"params": params, "model_type": model_type, "metrics": m}
 
 # --- INITIALIZE MODULES IN SESSION STATE ---
 if 'model_manager' not in st.session_state:
@@ -352,12 +461,13 @@ if 'latest_result_full' in st.session_state:
     
     st.header(f"📊 Results Dashboard: {model_type}")
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📈 Summary & Visualization", 
         "🔬 Advanced Diagnostics", 
         "⚙️ Theory & Equations", 
         "📈 Statistical Analysis", 
-        "🤖 AI & Export"
+        "🧠 Neural Network",
+        "Export"
     ])
 
     with tab1:
@@ -409,7 +519,7 @@ if 'latest_result_full' in st.session_state:
                     scene=dict(xaxis_title="X", yaxis_title="Y", zaxis_title="Z (Depth)"),
                     legend=dict(bgcolor="var(--surface)", bordercolor="var(--surface-border)", borderwidth=1)
                 )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="viz_main_fig")
 
     with tab2:
         st.markdown(f"## Advanced Diagnostics: {model_type}")
@@ -420,10 +530,10 @@ if 'latest_result_full' in st.session_state:
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("### Scaffold Quality Assessment")
-                st.plotly_chart(get_placeholder_radar_chart(metrics), use_container_width=True)
+                st.plotly_chart(get_placeholder_radar_chart(metrics), use_container_width=True, key="diag_struct_radar")
             with col2:
                 st.markdown("### Flow Field Analysis")
-                st.plotly_chart(get_placeholder_streamline_plot(), use_container_width=True)
+                st.plotly_chart(get_placeholder_streamline_plot(), use_container_width=True, key="diag_struct_stream")
             st.divider()
             st.markdown("### Depth-Dependent Transport")
             depth_data = pd.DataFrame({'Depth (mm)': np.linspace(0, 10, 20), 'Tortuosity': 1.0 + 0.5 * np.sin(np.linspace(0, 3.14, 20))})
@@ -433,10 +543,10 @@ if 'latest_result_full' in st.session_state:
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("### Channel Width Distribution")
-                st.plotly_chart(get_placeholder_histogram(title="Channel Width"), use_container_width=True)
+                st.plotly_chart(get_placeholder_histogram(title="Channel Width"), use_container_width=True, key="diag_porous_hist_width")
             with col2:
                 st.markdown("### Cross-Sectional Analysis")
-                st.plotly_chart(get_placeholder_slice_plot(), use_container_width=True)
+                st.plotly_chart(get_placeholder_slice_plot(), use_container_width=True, key="diag_porous_slice")
             st.divider()
             st.markdown("### Percolation Analysis")
             perc_data = pd.DataFrame({'Porosity': np.linspace(0.1, 0.8, 30), 'LCC_Fraction': 1 / (1 + np.exp(-15*(np.linspace(0.1, 0.8, 30) - 0.31)))})
@@ -446,10 +556,10 @@ if 'latest_result_full' in st.session_state:
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("### Path Tortuosity Distribution")
-                st.plotly_chart(get_placeholder_histogram(title="Path Tortuosity"), use_container_width=True)
+                st.plotly_chart(get_placeholder_histogram(title="Path Tortuosity"), use_container_width=True, key="diag_surface_hist_tort")
             with col2:
                 st.markdown("### Pillar Adhesion Heatmap")
-                st.plotly_chart(get_placeholder_slice_plot(title="Growth Density on Pillar Tops"), use_container_width=True)
+                st.plotly_chart(get_placeholder_slice_plot(title="Growth Density on Pillar Tops"), use_container_width=True, key="diag_surface_heat_pillars")
             st.divider()
             st.markdown("### Network Topology")
             st.image("https://i.imgur.com/g8fS1qK.png", caption="Placeholder for a 2D Network Graph visualization.")
@@ -598,97 +708,314 @@ if 'latest_result_full' in st.session_state:
             st.rerun()
 
     with tab5:
-        st.markdown("## 🤖 AI-Powered Analysis & Data Export")
-        st.markdown("*Advanced computational tools and export options*")
-        st.divider()
-        
-        ana_col1, ana_col2 = st.columns(2)
-        
-        with ana_col1:
-            st.markdown("### 🔬 Post-Simulation Analysis")
-            with st.expander("🔄 Sensitivity Analysis", expanded=False):
-                if st.button("Run Parameter Sweep", key="sensitivity"):
-                    st.success("✓ Sensitivity analysis complete")
-                    st.bar_chart(pd.DataFrame({'Influence': [0.82, 0.45, 0.67, 0.34]}, index=['Pillar Size', 'Stiffness', 'Channel Width', 'Glucose']))
-            with st.expander("🧠 Optimize Matrix Structure", expanded=True):
-                wc = st.slider("Weight: Coverage", 0.0, 2.0, 1.0, 0.1)
-                wp = st.slider("Weight: Permeability", 0.0, 2.0, 1.0, 0.1)
-                ws = st.slider("Weight: Stiffness", 0.0, 2.0, 0.5, 0.1)
-                wt = st.slider("Penalty: Tortuosity", 0.0, 2.0, 1.0, 0.1)
-                
-                if st.button("Run Genetic Optimizer", key="opt_run"):
-                    # Use the Genetic Optimizer instead of the loop
-                    with st.spinner("Running Genetic Algorithm..."):
-                        best_params, best_fitness, history = st.session_state.optimizer.run_optimization(model_type, pop_size=30, generations=10)
-                        
-                    st.success(f"✓ Optimized structure computed (Fitness: {best_fitness:.2f})")
-                    
-                    # Compute metrics for best params
-                    bm = run_simulation_logic(best_params, model_type)['metrics']
-                    
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("Coverage", f"{bm.get('coverage_fraction', 0):.1%}")
-                    p_k = bm.get('permeability_kappa_iso', bm.get('permeability_kappa_X', 0))
-                    c2.metric("Permeability", f"{p_k:.1e} m²")
-                    c3.metric("Tortuosity", f"{bm.get('mean_tortuosity', 0):.2f}")
-                    
-                    st.json({k: best_params[k] for k in ['pillar_count','pillar_size_mm','channel_width_mm','channel_node_size_mm']})
-                    
-                    if st.button("Run Simulation With Best", key="opt_apply"):
-                        new_r = run_simulation_logic(best_params, model_type)
-                        st.session_state.run_history.append(new_r['metrics'])
-                        st.session_state.latest_result_full = new_r
-                        st.success("✓ Simulation run with optimized parameters")
-                        st.rerun()
-            
-            with st.expander("🧪 Stress Testing", expanded=False):
-                if st.button("Run Stress Test", key="stress"):
-                    st.success("✓ System stable")
-            
-            st.markdown("### 🤖 Machine Learning Tools")
+        st.markdown("## 🧠 Neural Network")
+        nn_col1 = st.container()
+        with nn_col1:
             with st.expander("🎯 Surrogate Modeling", expanded=True):
                 st.info("Train a Neural Network to predict metrics instantly, bypassing the simulation steps.")
-                if st.button("Train Surrogate Model (PyTorch)", key="ml_train"):
+                if st.button("Train Surrogate Model (PyTorch)", key="nn_ml_train"):
                     with st.spinner("Training Neural Network on synthetic data..."):
                         loss = train_initial_model(st.session_state.model_manager, n_samples=500)
                     st.success(f"✓ Model trained (Final Loss: {loss:.4f})")
                     st.session_state.model_trained = True
-            
-            with st.expander("📈 Feature Importance (SHAP)", expanded=False):
-                if st.button("Generate SHAP Plot", key="shap"):
-                    st.success("✓ SHAP analysis complete")
-                    st.bar_chart(pd.DataFrame({'SHAP_Value': [0.45, 0.28, 0.15, 0.08, 0.04]}, index=['Pillar Size', 'Stiffness', 'Glucose', 'Channel Width', 'Density']))
-        
-        with ana_col2:
-            st.markdown("### 📦 Export & Documentation")
-            
-            with st.expander("📄 Report Generation", expanded=True):
-                st.download_button("📄 Download PDF Report", "...", "report.pdf", use_container_width=True)
-                
-                # Full Data CSV
-                if st.session_state.run_history:
-                    csv_data = pd.DataFrame(st.session_state.run_history).to_csv(index=False)
-                    st.download_button("📊 Download Full Run History (CSV)", csv_data, "full_run_history.csv", "text/csv", use_container_width=True)
-                
-                if model_type == "2.5D Surface (Pillar Tops)":
-                    st.download_button("🎨 Download SVG Mask", "...", "mask.svg", use_container_width=True)
+            with st.expander("🧠 Neural Optimization Mode", expanded=True):
+                c1, c2 = st.columns(2)
+                with c1:
+                    seed = st.number_input("Seed", 0, 1000000, 42, 1, key="nn_opt_seed")
+                with c2:
+                    n_search = st.number_input("Global Search Samples", 1000, 50000, 4000, 1000, key="nn_opt_n_search")
+                colA, colB, colC = st.columns(3)
+                with colA:
+                    epochs = st.number_input("Surrogate epochs", 50, 1000, 150, 50, key="nn_opt_epochs")
+                with colB:
+                    snapshot_stride = st.number_input("Snapshot stride", 1, 50, 10, 1, key="nn_opt_stride")
+                with colC:
+                    connections_shown = st.number_input("Connections shown", 50, 1000, 200, 50, key="nn_opt_conn")
+                run_opt = st.button("Run Neural Optimization", type="primary", key="nn_opt_run")
+                if run_opt:
+                    rng = np.random.default_rng(int(seed))
+                    recs = []
+                    X_list = []
+                    y_list = []
+                    tries = 0
+                    while len(recs) < 150 and tries < 10000:
+                        p = opt_sample_params(rng)
+                        p["model_type"] = model_type
+                        ok, msg = opt_validate_params(p)
+                        if ok:
+                            r = run_metrics_only(p, model_type)
+                            y = r["metrics"]["avg_growth_rate"]
+                            recs.append({"params": p, "metrics": r["metrics"], "y": y})
+                            X_list.append(opt_to_vector(p))
+                            y_list.append(y)
+                        tries += 1
+                    X = np.vstack(X_list).astype(np.float32)
+                    y = np.array(y_list, dtype=np.float32).reshape(-1, 1)
+                    m, sc, snaps = train_surrogate(X, y, seed=int(seed), epochs=int(epochs), snapshot_stride=int(snapshot_stride))
+                    st.session_state.opt_baseline = y.squeeze()
+                    st.session_state.opt_model = m
+                    st.session_state.opt_scaler = sc
+                    st.session_state.opt_snaps = snaps
+                    best = opt_global_search(m, sc, rng, n=int(n_search))
+                    best[1]["model_type"] = model_type
+                    st.session_state.opt_candidate = best[1]
+                    cand = []
+                    for i in range(20):
+                        rr = run_metrics_only(best[1], model_type)
+                        cand.append(rr["metrics"]["avg_growth_rate"])
+                    st.session_state.opt_candidate_samples = np.array(cand, dtype=np.float32)
+                if "opt_candidate" in st.session_state:
+                    base = st.session_state.opt_baseline
+                    cand = st.session_state.opt_candidate_samples
+                    mu, sigma = stats_fit_gaussian(base)
+                    fig = go.Figure()
+                    fig.add_trace(go.Histogram(x=base, name="Baseline", opacity=0.55))
+                    fig.add_trace(go.Histogram(x=cand, name="Candidate", opacity=0.55))
+                    fig.update_layout(barmode="overlay", title="Baseline vs Candidate")
+                    fig.update_traces(marker_line_width=0.5, marker_line_color="white")
+                    xs = np.linspace(base.min(), base.max(), 200)
+                    pdf = (1/(sigma*np.sqrt(2*np.pi))) * np.exp(-0.5*((xs-mu)/sigma)**2)
+                    pdf_scaled = pdf * (base.size * (xs[1]-xs[0]))
+                    fig.add_trace(go.Scatter(x=xs, y=pdf_scaled, mode="lines", name="Baseline Normal Fit"))
+                    st.plotly_chart(fig, use_container_width=True, key="nn_candidate_hist")
+                    p_val_cand, d_cand = stats_compare(cand, base)
+                    pow_cand = stats_power(d_cand, len(cand), len(base))
+                    st.metric("Candidate p-value", f"{p_val_cand:.4f}")
+                    st.metric("Candidate Cohen's d", f"{d_cand:.3f}")
+                    st.metric("Candidate Power", f"{pow_cand:.3f}")
+                    labels = OPT_ORDER
+                    values = [float(st.session_state.opt_candidate[k]) for k in labels]
+                    sliders = {}
+                    cols = st.columns(3)
+                    for i, k in enumerate(labels):
+                        lo, hi = OPT_PARAM_RANGES[k]
+                        default = float(values[i])
+                        with cols[i % 3]:
+                            sliders[k] = st.slider(k, float(lo), float(hi), default, step=(0.01 if isinstance(lo, float) else 1.0), key=f"nn_opt_slider_{k}")
+                    confirm = st.button("Confirm Final Parameters", type="primary", key="nn_opt_confirm")
+                    if confirm:
+                        fp = {k: float(sliders[k]) for k in sliders}
+                        fp["pillar_count"] = int(fp["pillar_count"])
+                        fp["model_type"] = model_type
+                        ok, msg = opt_validate_params(fp)
+                        if not ok:
+                            st.error(msg)
+                        else:
+                            st.session_state.opt_final = fp
+                            fs = []
+                            rng = np.random.default_rng(int(seed))
+                            for i in range(30):
+                                rr = run_simulation_logic(fp, model_type)
+                                fs.append(rr["metrics"]["avg_growth_rate"])
+                            st.session_state.opt_final_samples = np.array(fs, dtype=np.float32)
+                if "opt_final_samples" in st.session_state:
+                    base = st.session_state.opt_baseline
+                    cand = st.session_state.opt_candidate_samples
+                    fin = st.session_state.opt_final_samples
+                    mb = float(np.mean(base)); mc = float(np.mean(cand)); mf = float(np.mean(fin))
+                    fig2 = go.Figure()
+                    fig2.add_trace(go.Histogram(x=base, name="Baseline", opacity=0.55))
+                    fig2.add_trace(go.Histogram(x=cand, name="Candidate", opacity=0.55))
+                    fig2.add_trace(go.Histogram(x=fin, name="Final", opacity=0.55))
+                    fig2.update_layout(barmode="overlay", title="Baseline vs Candidate vs Final")
+                    fig2.update_traces(marker_line_width=0.5, marker_line_color="white")
+                    fig2.add_shape(type="line", x0=mb, x1=mb, y0=0, y1=1, yref="paper", line=dict(color="blue", dash="dash"))
+                    fig2.add_shape(type="line", x0=mc, x1=mc, y0=0, y1=1, yref="paper", line=dict(color="orange", dash="dash"))
+                    fig2.add_shape(type="line", x0=mf, x1=mf, y0=0, y1=1, yref="paper", line=dict(color="green", dash="dash"))
+                    st.plotly_chart(fig2, use_container_width=True, key="nn_final_hist")
+                    p_val_fin, d_fin = stats_compare(fin, base)
+                    pow_fin = stats_power(d_fin, len(fin), len(base))
+                    st.metric("Final p-value", f"{p_val_fin:.4f}")
+                    st.metric("Final Cohen's d", f"{d_fin:.3f}")
+                    st.metric("Final Power", f"{pow_fin:.3f}")
+                    xvec = opt_to_vector(st.session_state.opt_final)
+                    sens = gradient_sensitivity(st.session_state.opt_model, st.session_state.opt_scaler, xvec)
+                    fig3 = go.Figure(go.Bar(x=labels, y=sens))
+                    fig3.update_layout(title="Parameter Sensitivity (|gradients|)", xaxis_title="Parameter", yaxis_title="Sensitivity")
+                    st.plotly_chart(fig3, use_container_width=True, key="nn_sensitivity_bar")
+                    idx = st.slider("NN Snapshot Index", 0, len(st.session_state.opt_snaps)-1, 0, 1, key="nn_snap_idx")
+                    layer_gap = st.slider("Layer spacing", 1.0, 4.0, 2.0, 0.1, key="nn_layer_gap")
+                    node_gap = st.slider("Node spacing", 0.8, 3.0, 1.5, 0.1, key="nn_node_gap")
+                    act_src = st.selectbox("Activation source", ["None","Candidate","Final"], key="nn_act_src")
+                    layout_type = st.selectbox("Layout", ["Hierarchical","Radial"], index=0, key="nn_layout")
+                    label_mode_ui = st.selectbox("Labels", ["Auto","Important only","All","None"], index=0, key="nn_label_mode")
+                    edge_thr = st.slider("Edge threshold", 0.0, 1.0, 0.15, 0.05, key="nn_edge_thr")
+                    show_arrows = st.checkbox("Show arrows on edges", value=True, key="nn_show_arrows")
+                    view_mode_ui = st.selectbox("View mode", ["Analysis","Presentation"], index=0, key="nn_view_mode")
+                    top_paths_k = st.number_input("Top paths highlighted", 1, 20, 8, 1, key="nn_top_paths_k")
+                    act_sign = st.checkbox("Color by activation sign", value=False, key="nn_activation_sign")
+                    acts = None
+                    if act_src == "Candidate" and "opt_candidate" in st.session_state:
+                        xv = opt_to_vector(st.session_state.opt_candidate)
+                        xs = st.session_state.opt_scaler.transform(xv.reshape(1, -1)).astype(np.float32)
+                        t = torch.tensor(xs)
+                        o, h1, h2 = st.session_state.opt_model(t)
+                        acts = {"in": xs.squeeze(), "h1": h1.squeeze().detach().cpu().numpy(), "h2": h2.squeeze().detach().cpu().numpy(), "out": float(o.squeeze().detach().cpu().numpy())}
+                    elif act_src == "Final" and "opt_final" in st.session_state:
+                        xv = opt_to_vector(st.session_state.opt_final)
+                        xs = st.session_state.opt_scaler.transform(xv.reshape(1, -1)).astype(np.float32)
+                        t = torch.tensor(xs)
+                        o, h1, h2 = st.session_state.opt_model(t)
+                        acts = {"in": xs.squeeze(), "h1": h1.squeeze().detach().cpu().numpy(), "h2": h2.squeeze().detach().cpu().numpy(), "out": float(o.squeeze().detach().cpu().numpy())}
+                    import importlib
+                    importlib.reload(vis)
+                    fig4 = vis.draw_nn(
+                        st.session_state.opt_snaps[idx],
+                        activations=acts,
+                        layer_gap=layer_gap,
+                        node_gap=node_gap,
+                        show_key=True,
+                        max_edges=int(connections_shown),
+                        layout=("radial" if layout_type == "Radial" else "hierarchical"),
+                        label_mode={"Auto":"auto","Important only":"important","All":"all","None":"none"}[label_mode_ui],
+                        edge_threshold=float(edge_thr),
+                        show_arrows=bool(show_arrows),
+                        top_paths_k=int(top_paths_k),
+                        show_activation_sign=bool(act_sign),
+                        view_mode=("presentation" if view_mode_ui == "Presentation" else "analysis"),
+                        palette="colorblind",
+                    )
+                    st.plotly_chart(fig4, use_container_width=True, key="nn_nn_viz")
+
+    with tab6:
+        st.markdown("## Export")
+        st.divider()
+        run_df = pd.DataFrame(st.session_state.run_history) if 'run_history' in st.session_state else pd.DataFrame()
+        formats = st.multiselect("File format options", ["PDF", "CSV", "Excel", "JSON"], default=["CSV"], key="export_formats")
+        range_choice = st.radio("Export range", ["Current view", "Selected items", "Custom range"], index=0, key="export_range")
+        df_sel = pd.DataFrame()
+        if range_choice == "Current view":
+            if 'latest_result_full' not in st.session_state:
+                st.error("No current view available")
+            else:
+                df_sel = pd.DataFrame([st.session_state.latest_result_full['metrics']])
+        elif range_choice == "Selected items":
+            if run_df.empty:
+                st.error("No run history available")
+            else:
+                idxs = st.multiselect("Select runs", options=list(range(len(run_df))), key="export_selected_idxs")
+                if idxs:
+                    df_sel = run_df.iloc[idxs]
+        else:
+            if run_df.empty:
+                st.error("No run history available")
+            else:
+                start_idx = st.number_input("Start index", 0, max(0, len(run_df)-1), 0, 1, key="export_range_start")
+                end_idx = st.number_input("End index", 0, max(0, len(run_df)-1), max(0, len(run_df)-1), 1, key="export_range_end")
+                if end_idx < start_idx:
+                    st.error("End index must be ≥ start index")
                 else:
-                    st.download_button("🏗️ Download STL Model (CAD)", "...", "scaffold_geometry.stl", use_container_width=True)
-                
-                st.download_button("📝 Download LaTeX Methods", "...", "methods.tex", use_container_width=True)
-            
-            st.markdown("### ❓ What-If Explorer")
-            with st.expander("🔮 Interactive Predictions", expanded=False):
-                if "3D" in model_type:
-                    st.slider("Pillar Size (mm)", 10.0, 50.0, float(params['pillar_size_mm']), 1.0, key="whatif1")
+                    df_sel = run_df.iloc[int(start_idx):int(end_idx)+1]
+        include_meta = st.checkbox("Include metadata", value=True, key="export_include_meta")
+        dest = st.selectbox("Destination", ["Local download", "Cloud storage", "Email attachment"], index=0, key="export_destination")
+        with st.expander("PDF settings", expanded=False):
+            pdf_dpi = st.number_input("DPI", 100, 600, 300, 50, key="export_pdf_dpi")
+        with st.expander("CSV settings", expanded=False):
+            csv_delim = st.text_input("Delimiter", ",", key="export_csv_delim")
+            csv_header = st.checkbox("Include header", value=True, key="export_csv_header")
+        with st.expander("Excel settings", expanded=False):
+            xls_sheet = st.text_input("Sheet name", "Runs", key="export_xls_sheet")
+        with st.expander("JSON settings", expanded=False):
+            json_indent = st.number_input("Indent", 0, 8, 2, 1, key="export_json_indent")
+            json_ascii = st.checkbox("Ensure ASCII", value=False, key="export_json_ascii")
+        compress = st.checkbox("Compress to ZIP", value=len(formats) > 1, key="export_compress")
+        comp_level = st.slider("Compression level", 0, 9, 5, 1, key="export_comp_level")
+        sched = st.checkbox("Schedule export", value=False, key="export_schedule")
+        if sched:
+            sch_date = st.date_input("Date", key="export_schedule_date")
+            sch_time = st.time_input("Time", key="export_schedule_time")
+            if st.button("Add scheduled export", key="export_schedule_add"):
+                if 'scheduled_exports' not in st.session_state:
+                    st.session_state.scheduled_exports = []
+                st.session_state.scheduled_exports.append({"date": str(sch_date), "time": str(sch_time), "formats": formats, "range": range_choice})
+                st.success("Scheduled")
+        ok_to_export = True
+        if range_choice == "Current view" and 'latest_result_full' not in st.session_state:
+            ok_to_export = False
+        if range_choice != "Current view" and run_df.empty:
+            ok_to_export = False
+        if not formats:
+            ok_to_export = False
+        if dest != "Local download":
+            st.info("Cloud and email destinations are not configured")
+        if st.button("Prepare export", type="primary", key="export_prepare"):
+            if not ok_to_export:
+                st.error("Invalid export parameters")
+            else:
+                files = []
+                latest = st.session_state.latest_result_full if 'latest_result_full' in st.session_state else None
+                meta = {}
+                if include_meta:
+                    if latest:
+                        meta = {"model_type": latest["model_type"], "params": latest.get("params", {})}
+                if "CSV" in formats:
+                    if df_sel.empty and latest:
+                        df_csv = pd.DataFrame([latest["metrics"]])
+                    else:
+                        df_csv = df_sel
+                    try:
+                        csv_bytes = df_csv.to_csv(index=False, sep=csv_delim, header=csv_header).encode("utf-8")
+                        files.append(("runs.csv", "text/csv", csv_bytes))
+                    except Exception as e:
+                        st.error(f"CSV export failed: {e}")
+                if "Excel" in formats:
+                    if df_sel.empty and latest:
+                        df_xls = pd.DataFrame([latest["metrics"]])
+                    else:
+                        df_xls = df_sel
+                    try:
+                        bio_xls = io.BytesIO()
+                        with pd.ExcelWriter(bio_xls) as writer:
+                            df_xls.to_excel(writer, sheet_name=xls_sheet, index=False)
+                        files.append(("runs.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bio_xls.getvalue()))
+                    except Exception as e:
+                        st.error(f"Excel export failed: {e}")
+                if "JSON" in formats:
+                    payload = {}
+                    if not df_sel.empty:
+                        payload["runs"] = df_sel.to_dict(orient="records")
+                    elif latest:
+                        payload["runs"] = [latest["metrics"]]
+                    if include_meta:
+                        payload["meta"] = meta
+                    try:
+                        json_bytes = json.dumps(payload, indent=int(json_indent), ensure_ascii=bool(json_ascii)).encode("utf-8")
+                        files.append(("runs.json", "application/json", json_bytes))
+                    except Exception as e:
+                        st.error(f"JSON export failed: {e}")
+                if "PDF" in formats:
+                    try:
+                        bio_pdf = io.BytesIO()
+                        with PdfPages(bio_pdf) as pdf:
+                            fig = plt.figure(figsize=(8.5, 11))
+                            txt = ""
+                            if latest:
+                                txt += f"Model: {latest['model_type']}\n"
+                                for k, v in latest["metrics"].items():
+                                    txt += f"{k}: {v}\n"
+                            elif not df_sel.empty:
+                                txt += f"Runs: {len(df_sel)}\n"
+                                for k in df_sel.columns[:10]:
+                                    txt += f"{k}: {df_sel[k].iloc[0]}\n"
+                            fig.text(0.1, 0.95, "Simulation Report", fontsize=16)
+                            fig.text(0.1, 0.9, txt[:2000], fontsize=10)
+                            pdf.savefig(fig, dpi=int(pdf_dpi))
+                            plt.close(fig)
+                        files.append(("report.pdf", "application/pdf", bio_pdf.getvalue()))
+                    except Exception as e:
+                        st.error(f"PDF export failed: {e}")
+                if not files:
+                    st.error("No files generated")
                 else:
-                    st.slider("Channel Width (mm)", 5.0, 30.0, float(params['channel_width_mm']), 0.5, key="whatif3")
-                
-                if st.button("🔮 Preview Effects", key="preview"):
-                    st.markdown("**Predicted Changes:**")
-                    col_a, col_b = st.columns(2)
-                    col_a.metric("Permeability", "1.2e-10 m²", delta="↑ 12%")
-                    col_b.metric("Stiffness", "23 kPa", delta="↓ 8%")
+                    if compress or len(files) > 1:
+                        bio_zip = io.BytesIO()
+                        with zipfile.ZipFile(bio_zip, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=int(comp_level)) as zf:
+                            for fn, mt, by in files:
+                                zf.writestr(fn, by)
+                        st.download_button("Download bundle", bio_zip.getvalue(), "export_bundle.zip", "application/zip", use_container_width=True, key="export_download_zip")
+                    else:
+                        fn, mt, by = files[0]
+                        st.download_button("Download file", by, fn, mt, use_container_width=True, key="export_download_single")
 
 # --- FOOTER ---
 st.divider()
