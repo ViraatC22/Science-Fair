@@ -10,14 +10,14 @@ LITERATURE_DATA = {
     "AutoAnalysis_TotalLength": {"mean": 550, "std": 50}, 
     "AutoAnalysis_NodeDensity": {"mean": 16, "std": 1},
     "Kay_2022_GrowthRate_High": {"mean": 10.0, "std": 1.0}
-}
+} 
 
 def generate_micropillar_geometry(params):
     """
     Generates the 3D numpy matrix for the micropillar array.
     """
     grid_size = 60 # Main grid resolution
-    scaffold_matrix = np.zeros((grid_size, grid_size, grid_size))
+    scaffold_matrix = np.zeros((grid_size, grid_size, grid_size))    
     
     # Get normalized dimensions from params
     n_pillars = int(params['pillar_count'])

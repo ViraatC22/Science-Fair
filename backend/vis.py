@@ -107,7 +107,8 @@ def draw_nn(
                              marker=dict(size=sizes, color=cvals, colorscale=cscale, showscale=showscale_flag,
                                          cmin=cmin, cmax=cmax,
                                          colorbar=dict(title="Activation", x=1.02, y=0.5),
-                                         line=dict(width=np.where(mix > 0.7, 1.5, 0.8), color="rgba(80,80,80,0.35)"))))
+                                         line=dict(width=np.where(mix > 0.7, 1.5, 0.8), color="rgba(80,80,80,0.35)")),
+                             showlegend=False))
     def add_edges_topk(w, x0s, y0s, x1s, y1s, color, quota):
         wabs = np.abs(w)
         if wabs.size == 0 or quota <= 0:
@@ -177,10 +178,527 @@ def draw_nn(
         fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", line=dict(color=f"rgba({col_top[0]},{col_top[1]},{col_top[2]},1)", width=4.0), name="Top path"))
         fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", marker=dict(size=16, color="rgba(100,100,100,1)"), name="Node size = importance"))
         fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", marker=dict(size=16, color="rgba(0,140,255,1)"), name="Node color = activation"))
-    fig.update_layout(title="Neural Network Pathways", xaxis=dict(visible=False), yaxis=dict(visible=False), showlegend=True,
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                      width=900, height=int(340 + n_max * 32))
-    fig.add_annotation(x=0, y=float(max(node_y) + 1.5), xref="x", yref="y",
+    fig.update_layout(title=dict(text="Neural Network Pathways", y=0.98, x=0, xanchor='left'),
+                      xaxis=dict(visible=False), yaxis=dict(visible=False), showlegend=True,
+                      legend=dict(
+                          orientation="v",
+                          yanchor="bottom",
+                          y=0.02,
+                          xanchor="left",
+                          x=0.02,
+                          bgcolor="#0f172a",
+                          bordercolor="rgba(255, 255, 255, 0.1)",
+                          borderwidth=1,
+                          font=dict(size=11, color="rgba(255, 255, 255, 0.9)")
+                      ),
+                      width=900, height=int(340 + n_max * 32),
+                      margin=dict(t=60, b=20, l=20, r=20))
+    fig.add_annotation(x=0, y=1.08, xref="paper", yref="paper",
                        text="Node size = importance; color = activation; edges width ∝ |weight|; orange = strongest input→output paths",
-                       showarrow=False, font=dict(size=12))
+                       showarrow=False, font=dict(size=12), xanchor="left", yanchor="bottom")
+    return fig
+
+
+def _classic_layout(title, height=None, width=None):
+    """Returns a layout dict with a timeless, scientific publication style."""
+    return dict(
+        title=dict(text=title, font=dict(family="Times New Roman", size=20, color="black"), x=0.5, xanchor='center'),
+        font=dict(family="Times New Roman", size=12, color="black"),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        xaxis=dict(showgrid=True, gridwidth=0.5, gridcolor="#E0E0E0", zeroline=False, showline=True, linewidth=1, linecolor="black", mirror=True),
+        yaxis=dict(showgrid=True, gridwidth=0.5, gridcolor="#E0E0E0", zeroline=False, showline=True, linewidth=1, linecolor="black", mirror=True),
+        height=height,
+        width=width,
+        showlegend=True,
+        legend=dict(bgcolor="rgba(255,255,255,0.9)", bordercolor="black", borderwidth=0.5)
+    )
+
+def _prepare_data(run_df, metric_col):
+    """Helper to prepare x, y data and axis config for evolution plots."""
+    if run_df.empty or metric_col not in run_df.columns:
+        return None, None, None
+        
+    y_data = run_df[metric_col].values.astype(float)
+    x_data = run_df.index.values + 1
+    
+    # Smart Axis Config
+    xaxis_config = dict(
+        showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.15)',
+        zeroline=False, showline=True, linecolor='rgba(128,128,128,0.15)',
+        tickmode='linear', dtick=1,
+        title=None
+    )
+    
+    if len(y_data) == 1:
+        xaxis_config['range'] = [0.5, 1.5]
+        xaxis_config['tickvals'] = [1]
+        xaxis_config['ticktext'] = ["Run 1"]
+        
+    return x_data, y_data, xaxis_config
+
+def draw_metric_area(run_df, metric_col, title, color="#1f77b4", unit=""):
+    """Unique Visual 1: Area Chart for Magnitude (e.g., Length)"""
+    x, y, xaxis = _prepare_data(run_df, metric_col)
+    if x is None: return go.Figure()
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode='lines+markers', fill='tozeroy',
+        line=dict(color=color, width=3),
+        marker=dict(size=8, color=color, line=dict(width=2, color='white')),
+        name=title
+    ))
+    
+    # Add value label on last point
+    fig.add_annotation(
+        x=x[-1], y=y[-1], text=f"<b>{y[-1]:.1f}</b>",
+        showarrow=True, arrowhead=0, ax=0, ay=-20,
+        font=dict(color=color)
+    )
+
+    layout = _classic_layout(title)
+    layout.update(xaxis=xaxis, height=300, margin=dict(l=20, r=20, t=40, b=20))
+    layout['yaxis']['title'] = unit
+    fig.update_layout(layout)
+    return fig
+
+def draw_metric_bar(run_df, metric_col, title, color="#ff7f0e", unit=""):
+    """Unique Visual 2: Bar Chart for Counts (e.g., Junctions)"""
+    x, y, xaxis = _prepare_data(run_df, metric_col)
+    if x is None: return go.Figure()
+    
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=x, y=y, 
+        marker=dict(color=color, opacity=0.8, line=dict(width=0)),
+        name=title, width=0.4 if len(x) < 5 else None # Thinner bars if few points
+    ))
+    
+    # Add value label on top of bars
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode='text', text=[f"{v:.0f}" for v in y],
+        textposition="top center", textfont=dict(color=color, weight="bold"),
+        showlegend=False
+    ))
+
+    layout = _classic_layout(title)
+    layout.update(xaxis=xaxis, height=300, margin=dict(l=20, r=20, t=40, b=20))
+    layout['yaxis']['title'] = unit
+    fig.update_layout(layout)
+    return fig
+
+def draw_metric_line(run_df, metric_col, title, color="#2ca02c", unit=""):
+    """Unique Visual 3: Thick Step/Spline Line for Complexity (e.g., Fractal Dim)"""
+    x, y, xaxis = _prepare_data(run_df, metric_col)
+    if x is None: return go.Figure()
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode='lines+markers', 
+        line=dict(color=color, width=4, shape='spline', smoothing=0.5), # Smooth curve
+        marker=dict(size=10, symbol='diamond', color=color, line=dict(width=2, color='white')),
+        name=title
+    ))
+    
+    # Label last point
+    fig.add_annotation(
+        x=x[-1], y=y[-1], text=f"<b>{y[-1]:.3f}</b>",
+        showarrow=True, arrowhead=0, ax=0, ay=-25,
+        font=dict(color=color)
+    )
+
+    layout = _classic_layout(title)
+    layout.update(xaxis=xaxis, height=300, margin=dict(l=20, r=20, t=40, b=20))
+    layout['yaxis']['title'] = unit
+    fig.update_layout(layout)
+    return fig
+
+def draw_metric_lollipop(run_df, metric_col, title, color="#d62728", unit="", baseline=1.0):
+    """Unique Visual 4: Lollipop Chart for Deviation (e.g., Tortuosity)"""
+    x, y, xaxis = _prepare_data(run_df, metric_col)
+    if x is None: return go.Figure()
+    
+    fig = go.Figure()
+    
+    # Draw stems
+    for xi, yi in zip(x, y):
+        fig.add_shape(type="line",
+            x0=xi, y0=baseline, x1=xi, y1=yi,
+            line=dict(color=color, width=2, dash="dot")
+        )
+    
+    # Draw heads
+    fig.add_trace(go.Scatter(
+        x=x, y=y, mode='markers+text',
+        marker=dict(size=12, color=color, symbol='circle'),
+        text=[f"{v:.2f}" for v in y], textposition="top center",
+        textfont=dict(color=color),
+        name=title
+    ))
+    
+    # Baseline line
+    fig.add_shape(type="line",
+        x0=min(x)-0.5, y0=baseline, x1=max(x)+0.5, y1=baseline,
+        line=dict(color="gray", width=1, dash="dash")
+    )
+
+    layout = _classic_layout(title)
+    layout.update(xaxis=xaxis, height=300, margin=dict(l=20, r=20, t=40, b=20))
+    layout['yaxis']['title'] = unit
+    # Ensure y-axis starts near 1.0 if it's tortuosity
+    min_y = min(min(y), baseline)
+    max_y = max(y)
+    padding = (max_y - min_y) * 0.2
+    layout['yaxis']['range'] = [min_y - padding, max_y + padding]
+    
+    fig.update_layout(layout)
+    return fig
+
+def draw_evolution_plot(
+    run_df,
+    metric_col,
+    title,
+    subtitle=None,
+    unit="",
+    color="#1f77b4",
+    ref_band=None,
+    ref_name="Reference",
+    normalize=False,
+    template="plotly_white"
+):
+    """
+    Draws an evolution-aware plot with reference bands, annotations, and smart styling.
+    """
+    if run_df.empty or metric_col not in run_df.columns:
+        return go.Figure()
+
+    y_data = run_df[metric_col].values.astype(float)
+    x_data = run_df.index.values + 1 # 1-based index for "Runs"
+
+    # Normalization
+    is_normalized = False
+    if normalize:
+        if np.max(y_data) > np.min(y_data):
+            y_data = (y_data - np.min(y_data)) / (np.max(y_data) - np.min(y_data))
+            is_normalized = True
+            unit = "Norm (0-1)"
+        elif np.max(y_data) != 0:
+             y_data = y_data / np.max(y_data)
+             is_normalized = True
+             unit = "Norm (Max=1)"
+
+    fig = go.Figure()
+
+    # Reference Band (only if not normalized, to keep context clear)
+    if ref_band and not is_normalized:
+        y0, y1 = ref_band
+        # Ensure y0, y1 are within reasonable bounds of the data for visibility
+        # But actually, bands are absolute references.
+        fig.add_hrect(
+            y0=y0, y1=y1,
+            fillcolor=color, opacity=0.1,
+            layer="below", line_width=0,
+            annotation_text=ref_name, annotation_position="top left",
+            annotation_font_size=10, annotation_font_color=color
+        )
+
+    # Main Evolution Trace
+    fig.add_trace(go.Scatter(
+        x=x_data, y=y_data,
+        mode='lines+markers',
+        line=dict(color=color, width=3, dash='solid'),
+        marker=dict(size=8, color=color, line=dict(width=1.5, color='white'), opacity=1.0),
+        name=title,
+        showlegend=False
+    ))
+
+    # Last Point Annotation
+    if len(y_data) > 0:
+        last_x = x_data[-1]
+        last_y = y_data[-1]
+        last_val_fmt = f"{last_y:.2f}" if is_normalized else f"{last_y:.1f}"
+        
+        # Delta calculation
+        delta_str = ""
+        if len(y_data) > 1:
+            prev_y = y_data[-2]
+            if abs(prev_y) > 1e-9:
+                pct_change = ((last_y - prev_y) / prev_y) * 100
+                symbol = "▲" if pct_change > 0 else "▼"
+                delta_str = f" {symbol} {abs(pct_change):.1f}%"
+        
+        # Determine text color (black or white depending on theme, but here we can force one or use auto)
+        # Using the trace color for the text is safe.
+        fig.add_annotation(
+            x=last_x, y=last_y,
+            text=f"Run {last_x}: <b>{last_val_fmt}</b><span style='font-size:10px'>{delta_str}</span>",
+            showarrow=True, arrowhead=0, ax=0, ay=-30,
+            font=dict(color=color, size=12),
+            bgcolor="rgba(255,255,255,0.8)" if "white" in template else "rgba(0,0,0,0.6)",
+            bordercolor=color, borderwidth=1, borderpad=4,
+            opacity=0.9
+        )
+
+    # Layout styling
+    full_title = f"{title} <span style='font-size:14px; opacity:0.6'>({unit})</span>" if unit else title
+    if subtitle:
+        full_title += f"<br><span style='font-size:12px; font-weight:normal; opacity:0.7'><i>{subtitle}</i></span>"
+    
+    # Grid styling
+    grid_color = 'rgba(128,128,128,0.15)'
+    if "dark" in template:
+        grid_color = 'rgba(255,255,255,0.1)'
+
+    # Handle single point case specially to make it "Self-Explanatory"
+    xaxis_config = dict(
+        showgrid=True, gridwidth=1, gridcolor=grid_color,
+        zeroline=False, showline=True, linecolor=grid_color,
+        tickmode='linear', dtick=1, # Force integer ticks
+        title=None
+    )
+    
+    if len(y_data) == 1:
+        # If only one point, center it and provide more context
+        xaxis_config['range'] = [0.5, 1.5]
+        xaxis_config['tickvals'] = [1]
+        xaxis_config['ticktext'] = ["Run 1"]
+
+    fig.update_layout(
+        title=dict(text=full_title, font=dict(size=16)),
+        template=template,
+        margin=dict(l=20, r=20, t=50, b=30), # Increased bottom margin for subtitles
+        height=300,
+        xaxis=xaxis_config,
+        yaxis=dict(
+            showgrid=True, gridwidth=1.5, gridcolor=grid_color, # Stronger horizontal
+            zeroline=False, showline=False,
+            tickfont=dict(color='rgba(128,128,128,0.8)'),
+            title=None
+        ),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        hovermode="x unified"
+    )
+    
+    return fig
+
+def draw_radar_chart(current_metrics, history_df=None, literature_data=None):
+    """
+    Draws a radar chart comparing current metrics to history max or literature values.
+    Classic 'Spider Plot' style.
+    """
+    keys = ["total_network_length", "avg_growth_rate", "num_junctions", 
+            "coverage_fraction", "fractal_dimension", "pillar_adhesion_index"]
+    keys = [k for k in keys if k in current_metrics]
+    
+    if not keys: return go.Figure()
+
+    vals = [current_metrics[k] for k in keys]
+    
+    # Ranges
+    ranges = {}
+    for k in keys:
+        max_val = current_metrics[k]
+        if history_df is not None and not history_df.empty and k in history_df.columns:
+            max_val = max(max_val, history_df[k].max())
+        if literature_data and k in literature_data:
+            max_val = max(max_val, literature_data[k] * 1.2)
+        if max_val == 0: max_val = 1.0
+        ranges[k] = max_val
+
+    # Normalize
+    r_current = [vals[i] / ranges[keys[i]] for i in range(len(keys))]
+    
+    fig = go.Figure()
+
+    # Current Run - Dark Blue, filled
+    fig.add_trace(go.Scatterpolar(
+        r=r_current + [r_current[0]], # Close loop
+        theta=[k.replace('_', ' ').title() for k in keys] + [keys[0].replace('_', ' ').title()],
+        fill='toself',
+        name='Current Run',
+        line_color='#003366', # Classic Navy
+        marker=dict(size=4),
+        fillcolor='rgba(0, 51, 102, 0.1)'
+    ))
+    
+    # Literature - Dark Red, dashed
+    if literature_data:
+        r_lit = []
+        for k in keys:
+            r_lit.append(literature_data.get(k, 0) / ranges[k])
+        
+        if any(r_lit):
+            fig.add_trace(go.Scatterpolar(
+                r=r_lit + [r_lit[0]],
+                theta=[k.replace('_', ' ').title() for k in keys] + [keys[0].replace('_', ' ').title()],
+                fill='none',
+                name='Literature Mean',
+                line=dict(color='#8B0000', dash='dash', width=2), # Dark Red
+                marker=dict(size=0)
+            ))
+
+    layout = _classic_layout("Metric Fingerprint (Normalized)")
+    layout.update(polar=dict(
+        radialaxis=dict(visible=True, range=[0, 1], showline=False, gridcolor="#E0E0E0"),
+        angularaxis=dict(gridcolor="#E0E0E0", linecolor="black")
+    ))
+    fig.update_layout(layout)
+    return fig
+
+
+def draw_phase_space(history_df, x_col, y_col, current_idx=None):
+    """
+    Draws a 2D scatter plot (phase space) with trajectory.
+    """
+    if history_df is None or history_df.empty: return go.Figure()
+        
+    fig = go.Figure()
+    
+    # History trajectory - Grey line
+    fig.add_trace(go.Scatter(
+        x=history_df[x_col],
+        y=history_df[y_col],
+        mode='lines',
+        line=dict(color='#A9A9A9', width=1), # DarkGray
+        name='Evolution Trajectory',
+        showlegend=False
+    ))
+    
+    # History points - Small circles
+    fig.add_trace(go.Scatter(
+        x=history_df[x_col],
+        y=history_df[y_col],
+        mode='markers',
+        marker=dict(size=6, color='#696969', opacity=0.6), # DimGray
+        name='Historical Runs'
+    ))
+    
+    # Highlight current - Gold Star
+    if current_idx is not None and current_idx < len(history_df):
+        curr = history_df.iloc[current_idx]
+        fig.add_trace(go.Scatter(
+            x=[curr[x_col]],
+            y=[curr[y_col]],
+            mode='markers',
+            marker=dict(size=14, color='#DAA520', symbol='star', line=dict(width=1, color='black')), # GoldenRod
+            name='Current Run'
+        ))
+
+    layout = _classic_layout(f"Phase Portrait: {x_col.replace('_', ' ').title()} vs {y_col.replace('_', ' ').title()}")
+    layout['xaxis']['title'] = x_col.replace('_', ' ').title()
+    layout['yaxis']['title'] = y_col.replace('_', ' ').title()
+    fig.update_layout(layout)
+    return fig
+
+
+def draw_3d_metric_space(history_df, x_col, y_col, z_col, current_idx=None):
+    """
+    Draws a 3D scatter plot.
+    """
+    if history_df is None or history_df.empty: return go.Figure()
+
+    fig = go.Figure()
+
+    # All runs - Color by index (Time) - viridis is fine, but let's do a classic heatmap style
+    fig.add_trace(go.Scatter3d(
+        x=history_df[x_col],
+        y=history_df[y_col],
+        z=history_df[z_col],
+        mode='markers',
+        marker=dict(
+            size=4,
+            color=history_df.index,
+            colorscale='Bluered', # Classic Blue to Red
+            opacity=0.7,
+            line=dict(width=0)
+        ),
+        name='History'
+    ))
+
+    # Highlight current
+    if current_idx is not None and current_idx < len(history_df):
+        curr = history_df.iloc[current_idx]
+        fig.add_trace(go.Scatter3d(
+            x=[curr[x_col]],
+            y=[curr[y_col]],
+            z=[curr[z_col]],
+            mode='markers',
+            marker=dict(size=8, color='#DAA520', symbol='diamond', line=dict(width=1, color='black')),
+            name='Current Run'
+        ))
+
+    layout = _classic_layout(f"3D Parameter Space Analysis")
+    layout['scene'] = dict(
+        xaxis=dict(title=x_col.replace('_', ' ').title(), backgroundcolor="white", gridcolor="#E0E0E0", showbackground=True),
+        yaxis=dict(title=y_col.replace('_', ' ').title(), backgroundcolor="white", gridcolor="#E0E0E0", showbackground=True),
+        zaxis=dict(title=z_col.replace('_', ' ').title(), backgroundcolor="white", gridcolor="#E0E0E0", showbackground=True),
+    )
+    fig.update_layout(layout)
+    return fig
+
+
+def draw_correlation_matrix(history_df):
+    """
+    Draws a correlation heatmap.
+    """
+    if history_df is None or len(history_df) < 2: return go.Figure()
+    
+    df_numeric = history_df.select_dtypes(include=[np.number])
+    df_numeric = df_numeric.loc[:, (df_numeric != df_numeric.iloc[0]).any()] 
+    if df_numeric.empty: return go.Figure()
+
+    corr = df_numeric.corr()
+    
+    # Classic Red-Blue Diverging
+    fig = go.Figure(data=go.Heatmap(
+        z=corr.values,
+        x=[c.replace('_', ' ').title() for c in corr.columns],
+        y=[c.replace('_', ' ').title() for c in corr.index],
+        colorscale='RdBu',
+        zmin=-1, zmax=1,
+        showscale=True,
+        colorbar=dict(title="Corr", thickness=15)
+    ))
+    
+    layout = _classic_layout("Pearson Correlation Matrix", height=600, width=600)
+    fig.update_layout(layout)
+    return fig
+
+def draw_parallel_coordinates(history_df, params_keys, metrics_keys):
+    """
+    Draws a parallel coordinates plot to show flow from Params -> Metrics.
+    """
+    if history_df is None or history_df.empty: return go.Figure()
+    
+    # Select a few key columns to avoid clutter
+    dims = []
+    
+    # Add params
+    for p in params_keys:
+        if p in history_df.columns:
+            dims.append(dict(range=[history_df[p].min(), history_df[p].max()],
+                             label=p.replace('_', ' ').title(), values=history_df[p]))
+            
+    # Add metrics
+    for m in metrics_keys:
+        if m in history_df.columns:
+            dims.append(dict(range=[history_df[m].min(), history_df[m].max()],
+                             label=m.replace('_', ' ').title(), values=history_df[m]))
+            
+    if not dims: return go.Figure()
+    
+    # Color lines by the last metric (usually the 'target' like growth rate)
+    last_metric = dims[-1]['values']
+    
+    fig = go.Figure(data=go.Parcoords(
+        line = dict(color = last_metric, colorscale = 'Bluered', showscale = True, colorbar=dict(title="Performance")),
+        dimensions = dims
+    ))
+    
+    # Layout adjustments for Parcoords are tricky, keep it simple
+    layout = _classic_layout("Parameter Sensitivity & Flow")
+    layout['font']['size'] = 10 # Smaller font for dense labels
+    fig.update_layout(layout)
     return fig

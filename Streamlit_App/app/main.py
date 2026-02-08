@@ -25,7 +25,7 @@ except ModuleNotFoundError:
     import importlib.util
     nn_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'backend', 'nn.py'))
     nn_spec = importlib.util.spec_from_file_location("backend_nn", nn_path)
-    backend_nn = importlib.util.module_from_spec(nn_spec)
+    backend_nn = importlib.util.module_from_spec(nn_spec) 
     nn_spec.loader.exec_module(backend_nn)
     train_surrogate = backend_nn.train_surrogate
     gradient_sensitivity = backend_nn.gradient_sensitivity
@@ -63,6 +63,8 @@ except ModuleNotFoundError:
     stats_power = backend_stats.power
 try:
     import backend.vis as vis
+    import importlib
+    importlib.reload(vis)
 except ModuleNotFoundError:
     import importlib.util
     vis_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'backend', 'vis.py'))
@@ -82,6 +84,27 @@ st.set_page_config(
 PLOTLY_TEMPLATE = "plotly_white"
 
 # --- LOCAL ML/OPT HELPERS ---
+PARAM_DISPLAY_NAMES = {
+    "pillar_count": "Grid Density (Pillars)",
+    "pillar_size_mm": "Pillar Diameter (mm)",
+    "channel_width_mm": "Channel Width (mm)",
+    "channel_node_size_mm": "Node Size (mm)",
+    "scaffold_stiffness_kPa": "Stiffness (kPa)",
+    "elasticity": "Elasticity (0-1)",
+    "scaffold_density_g_cm3": "Scaffold Density (g/cm³)",
+    "initial_mass_g": "Initial Biomass (g)",
+    "media_depth_mm": "Media Depth (mm)",
+    "replenish_freq_hr": "Feed Frequency (hrs)",
+    "dmem_glucose": "Glucose (mM)",
+    "dmem_glutamine": "Glutamine (mM)",
+    "dmem_pyruvate": "Pyruvate (mM)",
+    "ion_na": "Sodium (Na+)",
+    "ion_k": "Potassium (K+)",
+    "ion_cl": "Chloride (Cl-)",
+    "ion_ca": "Calcium (Ca2+)",
+    "light_lumens": "Light Intensity (lm)"
+}
+
 class ModelManager:
     def __init__(self, input_dim=17, output_dim=1):
         self.input_dim = input_dim
@@ -143,55 +166,6 @@ if 'optimizer' not in st.session_state:
     st.session_state.optimizer = GeneticOptimizer(st.session_state.model_manager)
 
 # --- PLOT GENERATORS ---
-def get_placeholder_radar_chart(metrics):
-    categories = ['Permeability', 'Coverage', 'Stiffness', 'Redundancy', 'Printability']
-    p_k = metrics.get('permeability_kappa_iso', metrics.get('permeability_kappa_X', 0))
-    values = [
-        np.clip(p_k * 1e12, 0.1, 1.0),
-        metrics.get('coverage_fraction', 0),
-        np.clip(metrics.get('Eeff', metrics.get('Keff', 0)) / 25.0, 0.1, 1.0),
-        metrics.get('lcc_fraction', np.random.uniform(0.8, 1.0)),
-        np.clip(metrics.get('printability_min_pore', 0.5) / 1.0, 0.1, 1.0)
-    ]
-    fig = go.Figure()
-    fig.add_trace(go.Scatterpolar(
-        r=values + [values[0]], theta=categories + [categories[0]],
-        fill='toself', name='Scaffold Quality', line=dict(color='var(--primary)', width=2)
-    ))
-    fig.update_layout(title="Scaffold Quality Indices", height=400, template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="var(--text)"), margin=dict(l=40, r=40, t=80, b=40))
-    return fig
-
-def get_placeholder_histogram(title="Channel Width Distribution"):
-    np.random.seed(42)
-    mean_val = st.session_state.latest_result_full['params'].get('channel_width_mm', 0.9)
-    data = np.random.normal(mean_val, 0.05, 500)
-    fig = ff.create_distplot([data], ['Channel Width (mm)'], bin_size=.01, show_rug=False)
-    fig.update_layout(title=title, height=400, showlegend=False, template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="var(--text)"), margin=dict(l=10, r=10, t=50, b=10))
-    return fig
-
-def get_placeholder_slice_plot(title="Cross-Sectional Slice"):
-    data = np.random.rand(20, 20)
-    fig = go.Figure(data=go.Heatmap(z=data, colorscale='Viridis', colorbar={"title": "Concentration"}))
-    fig.update_layout(title=title, height=400, template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="var(--text)"), margin=dict(l=10, r=10, t=50, b=10))
-    return fig
-
-def get_placeholder_streamline_plot():
-    x_vec = np.arange(0, 10)
-    y_vec = np.arange(0, 10)
-    x, y = np.meshgrid(x_vec, y_vec)
-    u = np.ones_like(x) * 1.0
-    v = np.sin(x) * 0.5
-    fig = ff.create_streamline(x_vec, y_vec, u, v, arrow_scale=.1)
-    fig.update_layout(title="Darcy Velocity Streamlines", height=400, template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="var(--text)"), margin=dict(l=10, r=10, t=50, b=10))
-    return fig
-
-def get_placeholder_anisotropy_plot():
-    x, y = np.meshgrid(np.arange(0, 10), np.arange(0, 10))
-    fig = go.Figure()
-    fig.add_trace(go.Cone(x=x.flatten(), y=y.flatten(), z=np.zeros(100), u=np.ones(100), v=np.zeros(100), w=np.zeros(100), sizemode="absolute", sizeref=0.5, anchor="tip", colorscale='Reds', showscale=False))
-    fig.add_trace(go.Cone(x=x.flatten(), y=y.flatten(), z=np.zeros(100), u=np.zeros(100), v=np.ones(100), w=np.zeros(100), sizemode="absolute", sizeref=0.2, anchor="tip", colorscale='Blues', showscale=False))
-    fig.update_layout(title="Anisotropy Map (D∥ vs D⊥)", height=400, template=PLOTLY_TEMPLATE, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="var(--text)"), margin=dict(l=10, r=10, t=50, b=10))
-    return fig
 
 # --- SUMMARY DISPLAYS ---
 def display_structured_flow_summary(metrics, params):
@@ -392,7 +366,13 @@ div[data-testid="metric-container"] {{ background: var(--surface); border: 1px s
 [data-testid="stTabs"] button[role="tab"] {{ background: {_t['surface']}; border: 1px solid var(--surface-border) !important; border-bottom-color: transparent !important; border-radius: 10px 10px 0 0; margin-right: 6px; color: var(--text); opacity: 0.7; }}
 [data-testid="stTabs"] button[aria-selected="true"] {{ background: var(--surface); color: var(--primary); opacity: 1; border-bottom: 2px solid var(--primary) !important; margin-bottom: -2px; }}
 [data-testid="stTabs"] div[role="tablist"] {{ padding-bottom: 0; border-bottom: 2px solid var(--surface-border); }}
-.plotly .legend {{ border-radius: 8px; border: 1px solid var(--surface-border); background-color: var(--surface) !important; }}
+.plotly .legend {{ border-radius: 8px; border: 1px solid var(--surface-border); background-color: var(--surface); }}
+/* Radio button styling for navigation */
+div[role="radiogroup"] {{ display: flex; flex-direction: row; overflow-x: auto; gap: 8px; padding-bottom: 5px; border-bottom: 1px solid var(--surface-border); }}
+div[role="radiogroup"] label {{ flex: 0 0 auto; background-color: var(--surface); border: 1px solid var(--surface-border); padding: 8px 16px; border-radius: 8px; transition: all 0.2s ease; margin-right: 0 !important; }}
+div[role="radiogroup"] label:hover {{ border-color: var(--primary); color: var(--primary); }}
+div[role="radiogroup"] label[data-checked="true"] {{ background-color: var(--primary) !important; border-color: var(--primary) !important; color: white !important; }}
+div[role="radiogroup"] label[data-checked="true"] p {{ color: white !important; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -461,16 +441,21 @@ if 'latest_result_full' in st.session_state:
     
     st.header(f"📊 Results Dashboard: {model_type}")
     
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📈 Summary & Visualization", 
-        "🔬 Advanced Diagnostics", 
-        "⚙️ Theory & Equations", 
-        "📈 Statistical Analysis", 
-        "🧠 Neural Network",
-        "Export"
-    ])
+    # Navigation
+    tabs = ["📈 Summary & Visualization", "🔬 Advanced Diagnostics", "📈 Statistical Analysis", "🧠 Neural Network", "Export"]
+    
+    if "nav_selection" not in st.session_state:
+        st.session_state.nav_selection = tabs[0]
+        
+    selected_tab = st.radio(
+        "Navigation", 
+        tabs, 
+        horizontal=True, 
+        label_visibility="collapsed",
+        key="nav_selection"
+    )
 
-    with tab1:
+    if selected_tab == tabs[0]:
         st.markdown("## Summary & 3D Visualization")
         col1, col2 = st.columns([1, 1])
         with col1:
@@ -521,113 +506,234 @@ if 'latest_result_full' in st.session_state:
                 )
             st.plotly_chart(fig, use_container_width=True, key="viz_main_fig")
 
-    with tab2:
+    if selected_tab == tabs[1]:
         st.markdown(f"## Advanced Diagnostics: {model_type}")
-        st.markdown("*Detailed analytical visualizations for in-depth analysis*")
+        st.markdown("*Detailed analytical visualizations tracking evolutionary trends across runs.*")
         st.divider()
         
-        if model_type == "3D Structured (Channel Flow)":
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("### Scaffold Quality Assessment")
-                st.plotly_chart(get_placeholder_radar_chart(metrics), use_container_width=True, key="diag_struct_radar")
-            with col2:
-                st.markdown("### Flow Field Analysis")
-                st.plotly_chart(get_placeholder_streamline_plot(), use_container_width=True, key="diag_struct_stream")
-            st.divider()
-            st.markdown("### Depth-Dependent Transport")
-            depth_data = pd.DataFrame({'Depth (mm)': np.linspace(0, 10, 20), 'Tortuosity': 1.0 + 0.5 * np.sin(np.linspace(0, 3.14, 20))})
-            st.line_chart(depth_data.set_index('Depth (mm)'))
+        # Prepare data
+        run_df = pd.DataFrame(st.session_state.run_history) if 'run_history' in st.session_state else pd.DataFrame()
+        
+        if run_df.empty:
+            st.info("Run at least one simulation to view diagnostics.")
+        else:
+            # Controls
+            col_ctrl1, col_ctrl2 = st.columns([3, 1])
+            with col_ctrl2:
+                normalize = st.toggle("Normalize Metrics (0-1)", key="adv_norm_toggle")
 
-        elif model_type == "3D Porous (Channel Diffusion)":
+            # Layout: 2x2 Grid of Key Topological Metrics
             col1, col2 = st.columns(2)
+            
+            # 1. Network Length (Structural - Blue)
             with col1:
-                st.markdown("### Channel Width Distribution")
-                st.plotly_chart(get_placeholder_histogram(title="Channel Width"), use_container_width=True, key="diag_porous_hist_width")
-            with col2:
-                st.markdown("### Cross-Sectional Analysis")
-                st.plotly_chart(get_placeholder_slice_plot(), use_container_width=True, key="diag_porous_slice")
-            st.divider()
-            st.markdown("### Percolation Analysis")
-            perc_data = pd.DataFrame({'Porosity': np.linspace(0.1, 0.8, 30), 'LCC_Fraction': 1 / (1 + np.exp(-15*(np.linspace(0.1, 0.8, 30) - 0.31)))})
-            st.line_chart(perc_data.set_index('Porosity'))
+                # Calculate baseline from first run if available
+                base_len = run_df["total_network_length"].iloc[0] if not run_df.empty else 0
+                ref_band = (base_len * 0.98, base_len * 1.02) if base_len > 0 else None
+                
+                fig1 = vis.draw_evolution_plot(
+                    run_df, "total_network_length", "Network Length", 
+                    subtitle="Total biological mass and reach of the organism.",
+                    unit="mm",
+                    color="#1f77b4", ref_band=ref_band, ref_name="Baseline ±2%",
+                    normalize=normalize, template=PLOTLY_TEMPLATE
+                )
+                st.plotly_chart(fig1, use_container_width=True)
 
-        elif model_type == "2.5D Surface (Pillar Tops)":
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("### Path Tortuosity Distribution")
-                st.plotly_chart(get_placeholder_histogram(title="Path Tortuosity"), use_container_width=True, key="diag_surface_hist_tort")
+            # 2. Junctions (Structural - Blue)
             with col2:
-                st.markdown("### Pillar Adhesion Heatmap")
-                st.plotly_chart(get_placeholder_slice_plot(title="Growth Density on Pillar Tops"), use_container_width=True, key="diag_surface_heat_pillars")
-            st.divider()
-            st.markdown("### Network Topology")
-            st.image("https://i.imgur.com/g8fS1qK.png", caption="Placeholder for a 2D Network Graph visualization.")
+                fig2 = vis.draw_evolution_plot(
+                    run_df, "num_junctions", "Connectivity (Junctions)", 
+                    subtitle="Number of branching points (nodes) in the network.",
+                    unit="count",
+                    color="#1f77b4", ref_band=None, 
+                    normalize=normalize, template=PLOTLY_TEMPLATE
+                )
+                st.plotly_chart(fig2, use_container_width=True)
 
-    with tab3:
+            col3, col4 = st.columns(2)
+
+            # 3. Fractal Dimension (Complexity - Green)
+            with col3:
+                if "fractal_dimension" in run_df.columns:
+                    fig3 = vis.draw_evolution_plot(
+                        run_df, "fractal_dimension", "Fractal Dimension", 
+                        subtitle="Complexity of the pattern (1.0 = Line, 2.0 = Plane).",
+                        unit="Df",
+                        color="#2ca02c", ref_band=(1.3, 1.7), ref_name="Biological Complexity",
+                        normalize=normalize, template=PLOTLY_TEMPLATE
+                    )
+                    st.plotly_chart(fig3, use_container_width=True)
+                else:
+                    st.info("Fractal dimension not available for this model.")
+
+            # 4. Tortuosity/Efficiency (Transport Cost - Red)
+            with col4:
+                if "mean_tortuosity" in run_df.columns:
+                    fig4 = vis.draw_evolution_plot(
+                        run_df, "mean_tortuosity", "Transport Efficiency (Tortuosity)", 
+                        subtitle="Path efficiency. 1.0 is a straight line (Optimal).",
+                        unit="τ",
+                        color="#d62728", ref_band=(1.0, 1.3), ref_name="Optimal Transport",
+                        normalize=normalize, template=PLOTLY_TEMPLATE
+                    )
+                    st.plotly_chart(fig4, use_container_width=True)
+                else:
+                    st.info("Tortuosity not available for this model.")
+        
+        st.divider()
+
         st.markdown(f"## Governing Equations & Theory: {model_type}")
         st.markdown("*Mathematical foundations and derived metrics*")
         st.divider()
         
         if model_type == "3D Structured (Channel Flow)":
+            # --- Calculations for Extra Metrics ---
+            # Re: Characteristic length = channel width. Velocity ~ 10 um/s (creeping flow)
+            # Pe: L*v/D. D ~ 2e-9 m2/s.
+            # Dh: Hydraulic diameter
+            L_char = params['channel_width_mm'] * 1e-3
+            h_char = params['media_depth_mm'] * 1e-3
+            v_char = 1e-5 # m/s
+            rho = 1000 # kg/m3
+            mu = 1e-3 # Pa.s
+            D_free = 2e-9 # m2/s
+            
+            # Hydraulic Diameter Dh = 2wh/(w+h)
+            Dh = (2 * L_char * h_char) / (L_char + h_char + 1e-9)
+            
+            Re = (rho * v_char * Dh) / mu
+            Pe = (v_char * Dh) / D_free
+            Shear = (6 * mu * v_char) / Dh # Parallel plate approximation
+            
+            # Pressure Drop (Hagen-Poiseuille) over 10mm
+            L_chip = 10e-3 
+            DeltaP = (12 * mu * L_chip * v_char) / (Dh**2 + 1e-12)
+            
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("### 🌊 Fluid Transport (Anisotropic)")
-                st.latex(r"\text{Darcy's Law: } \mathbf{u} = -\frac{\mathbf{K}}{\mu}\nabla p")
-                st.latex(r"\text{Permeability Tensor: } \mathbf{K} = \begin{pmatrix} K_x & 0 \\ 0 & K_y \end{pmatrix}")
+                st.latex(r"\text{Navier-Stokes: } \rho (\mathbf{u} \cdot \nabla) \mathbf{u} = -\nabla p + \mu \nabla^2 \mathbf{u}")
+                st.latex(r"\text{Hydraulic Dia: } D_h = \frac{4A}{P} \approx \frac{2wh}{w+h}")
+                st.latex(r"\text{Reynolds Number: } Re = \frac{\rho v D_h}{\mu}")
+                st.latex(r"\text{Shear Stress: } \tau_w = \mu \frac{\partial u}{\partial y} \approx \frac{6\mu v}{D_h}")
+
             with col2:
                 st.markdown("### 🧪 Mass Transport")
                 st.latex(r"\frac{\partial C}{\partial t} + \mathbf{u}\cdot\nabla C = D_{\rm eff}\nabla^2 C - r(C)")
-                st.latex(r"\text{Stiffness: } K_{\rm eff} = \sum_{i}\frac{EA_i}{L_i}")
+                st.latex(r"\text{Peclet Number: } Pe = \frac{v D_h}{D} = \frac{\text{Advection}}{\text{Diffusion}}")
+                st.latex(r"\text{Pressure Drop: } \Delta P = \frac{12 \mu L v}{D_h^2}")
+                st.latex(r"\text{Darcy Velocity: } \mathbf{u} = -\frac{\mathbf{K}}{\mu}\nabla p")
             st.divider()
             st.markdown("### 📊 Calculated Parameters")
-            pcol1, pcol2, pcol3 = st.columns(3)
+            pcol1, pcol2, pcol3, pcol4 = st.columns(4)
             pcol1.metric("Porosity (φ)", f"{metrics['porosity_phi']:.3f}")
-            pcol1.metric("Permeability (K_x)", f"{metrics['permeability_kappa_X']:.2e} m²")
-            pcol2.metric("Permeability (K_y)", f"{metrics['permeability_kappa_Y']:.2e} m²")
-            pcol2.metric("Tortuosity (τ)", f"{metrics['mean_tortuosity']:.3f}")
-            pcol3.metric("Deff", f"{metrics['Deff']:.2e} m²/s")
-            pcol3.metric("Keff", f"{metrics['Keff']:.2f} kPa")
+            pcol1.metric("Reynolds No. (Re)", f"{Re:.2e}")
+            
+            pcol2.metric("Permeability (K_x)", f"{metrics['permeability_kappa_X']:.2e} m²")
+            pcol2.metric("Peclet No. (Pe)", f"{Pe:.1f}")
+            
+            pcol3.metric("Hydraulic Dia (Dh)", f"{Dh*1000:.2f} mm")
+            pcol3.metric("Shear Stress", f"{Shear:.2e} Pa")
+            
+            pcol4.metric("Pressure Drop", f"{DeltaP:.2f} Pa")
+            pcol4.metric("Keff", f"{metrics['Keff']:.2f} kPa")
 
         elif model_type == "3D Porous (Channel Diffusion)":
+            # --- Calculations ---
+            # Thiele Modulus: phi = L * sqrt(k/Deff). k ~ 0.01 1/s
+            # Effectiveness: eta = tanh(phi)/phi
+            L_char = params['pillar_size_mm'] * 1e-3 # Characteristic pore size approx
+            k_react = 0.01 
+            Deff = metrics['Deff']
+            phi_thiele = L_char * np.sqrt(k_react / (Deff + 1e-12))
+            eta = np.tanh(phi_thiele) / (phi_thiele + 1e-6)
+            
+            # Specific Surface Area Sv = 6(1-phi)/d_p
+            phi_void = metrics['porosity_phi']
+            Sv_real = (6 * (1 - phi_void)) / (L_char + 1e-9)
+            
+            # Archie's Law m calculation: Deff/D0 = phi^m -> m = log(Deff/D0)/log(phi)
+            D0 = 2e-9
+            if phi_void > 0 and phi_void < 1:
+                m_archie = np.log((Deff + 1e-15)/D0) / np.log(phi_void)
+            else:
+                m_archie = 1.0
+
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown("### 🌊 Porous Media Transport (Isotropic)")
-                st.latex(r"\text{Permeability: } \kappa \approx \frac{\phi^3}{C(1-\phi)^2 S_v^2}")
-                st.latex(r"\text{Stiffness (Gibson–Ashby): } E_{\text{eff}} \sim (1-\phi)^n")
+                st.markdown("### 🌊 Porous Media Transport")
+                st.latex(r"\text{Kozeny-Carman: } \kappa \approx \frac{\phi^3}{C(1-\phi)^2 S_v^2}")
+                st.latex(r"\text{Specific Surface: } S_v = \frac{surface}{volume} \approx \frac{6(1-\phi)}{d_p}")
+                st.latex(r"\text{Thiele Modulus: } \phi_{Th} = L \sqrt{\frac{k}{D_{eff}}}")
+                st.latex(r"\text{Effectiveness Factor: } \eta = \frac{\tanh(\phi_{Th})}{\phi_{Th}}")
             with col2:
                 st.markdown("### 🧪 Advection-Diffusion")
-                st.latex(r"\frac{\partial C}{\partial t}+\mathbf{u}\cdot\nabla C = \nabla\cdot(D_{\rm eff}\nabla C)-r(C)")
+                st.latex(r"\frac{\partial C}{\partial t} = \nabla\cdot(D_{\rm eff}\nabla C) - k C^n")
+                st.latex(r"\text{Archie's Law: } D_{eff} = D_0 \phi^m")
+                st.latex(r"\text{Damkohler Number: } Da = \frac{k L^2}{D_{eff}} = \phi_{Th}^2")
                 st.latex(r"\text{Percolation: } P_\infty \sim (\phi-\phi_c)^\beta")
             st.divider()
             st.markdown("### 📊 Calculated Parameters")
-            pcol1, pcol2, pcol3 = st.columns(3)
+            pcol1, pcol2, pcol3, pcol4 = st.columns(4)
             pcol1.metric("Porosity (φ)", f"{metrics['porosity_phi']:.3f}")
-            pcol1.metric("Permeability (κ)", f"{metrics['permeability_kappa_iso']:.2e} m²")
-            pcol2.metric("Tortuosity (τ)", f"{metrics['mean_tortuosity']:.3f}")
-            pcol2.metric("Fractal Dim. (Df)", f"{metrics['fractal_dimension']:.3f}")
-            pcol3.metric("Deff", f"{metrics['Deff']:.2e} m²/s")
-            pcol3.metric("Eeff", f"{metrics['Eeff']:.2f} kPa")
+            pcol1.metric("Thiele Modulus", f"{phi_thiele:.2f}")
+            
+            pcol2.metric("Permeability (κ)", f"{metrics['permeability_kappa_iso']:.2e} m²")
+            pcol2.metric("Effectiveness (η)", f"{eta:.2f}")
+            
+            pcol3.metric("Archie's Exp (m)", f"{m_archie:.2f}")
+            pcol3.metric("Spec. Surface (Sv)", f"{Sv_real:.1e} 1/m")
+            
+            pcol4.metric("Deff", f"{metrics['Deff']:.2e} m²/s")
+            pcol4.metric("Eeff", f"{metrics['Eeff']:.2f} kPa")
 
         elif model_type == "2.5D Surface (Pillar Tops)":
+            # --- Calculations ---
+            # Diffusion length Ld = sqrt(4Dt). t=24h
+            # Schmidt Sc = nu / D. nu = 1e-6 m2/s
+            t_sec = 24 * 3600
+            D_surf = 1e-10 # Slower on surface
+            L_diff = np.sqrt(4 * D_surf * t_sec) * 1000 # to mm
+            MSD = 4 * D_surf * t_sec * 1e6 # mm^2
+            
+            nu = 1e-6
+            Sc = nu / D_surf
+            
+            # Deborah Number
+            tau_growth = metrics['time_to_connection'] * 60 # seconds
+            De = tau_growth / t_sec
+
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("### 🧪 Surface Diffusion")
-                st.latex(r"\frac{\partial C}{\partial t} = D\nabla^2 C - r(C)")
-                st.latex(r"\text{Reaction-Diffusion on a 2D surface}")
+                st.latex(r"\frac{\partial C}{\partial t} = D_s \nabla^2 C - r(C)")
+                st.latex(r"\text{Mean Sq. Disp: } \text{MSD} = \langle r^2 \rangle = 4 D t")
+                st.latex(r"\text{Diffusion Length: } L_D = \sqrt{4 D t}")
+                st.latex(r"\text{Schmidt Number: } Sc = \frac{\nu}{D} = \frac{\text{Viscous}}{\text{Diffusive}}")
             with col2:
                 st.markdown("### 🗺️ Network Topology")
-                st.latex(r"\text{Tortuosity: } \tau = L_{\text{path}} / \| \mathbf{x}_{\text{end}} - \mathbf{x}_{\text{start}}\|")
-                st.latex(r"\text{Fractal Dimension: } D_f = -d\ \log N(\epsilon) / d\ \log \epsilon")
+                st.latex(r"\text{Tortuosity: } \tau = \frac{L_{\text{path}}}{\| \mathbf{x}_{\text{end}} - \mathbf{x}_{\text{start}}\|}")
+                st.latex(r"\text{Fractal Dimension: } D_f = \lim_{\epsilon \to 0} \frac{\log N(\epsilon)}{\log(1/\epsilon)}")
+                st.latex(r"\text{Deborah Number: } De = \frac{\tau_{growth}}{t_{obs}}")
+                st.latex(r"\text{Coverage Rate: } R_c = \frac{dA}{dt} \approx k_{spread} (1-A)")
             st.divider()
             st.markdown("### 📊 Calculated Parameters")
-            pcol1, pcol2, pcol3 = st.columns(3)
+            pcol1, pcol2, pcol3, pcol4 = st.columns(4)
             pcol1.metric("Fractal Dim. (Df)", f"{metrics['fractal_dimension']:.3f}")
+            pcol1.metric("Diffusion Len", f"{L_diff:.1f} mm")
+            
             pcol2.metric("Tortuosity (τ)", f"{metrics['mean_tortuosity']:.3f}")
-            pcol3.metric("Pillar Adhesion", f"{metrics['pillar_adhesion_index']:.3f}")
+            pcol2.metric("Schmidt No. (Sc)", f"{Sc:.1e}")
+            
+            pcol3.metric("MSD (24h)", f"{MSD:.2f} mm²")
+            pcol3.metric("Deborah No. (De)", f"{De:.2e}")
+            
+            pcol4.metric("Growth Rate", f"{metrics['avg_growth_rate']:.2f} mm/h")
+            pcol4.metric("Coverage Rate", f"{metrics['coverage_fraction']:.2f}")
 
     # --- STATISTICAL ANALYSIS TAB ---
-    with tab4:
+    if selected_tab == tabs[2]:
         st.markdown("## 📈 Statistical Analysis vs. Literature")
         st.markdown("*Compare your simulation runs against published data.*")
         st.divider()
@@ -707,7 +813,7 @@ if 'latest_result_full' in st.session_state:
             st.session_state.run_history = []
             st.rerun()
 
-    with tab5:
+    if selected_tab == tabs[3]:
         st.markdown("## 🧠 Neural Network")
         nn_col1 = st.container()
         with nn_col1:
@@ -718,20 +824,32 @@ if 'latest_result_full' in st.session_state:
                         loss = train_initial_model(st.session_state.model_manager, n_samples=500)
                     st.success(f"✓ Model trained (Final Loss: {loss:.4f})")
                     st.session_state.model_trained = True
-            with st.expander("🧠 Neural Optimization Mode", expanded=True):
-                c1, c2 = st.columns(2)
-                with c1:
-                    seed = st.number_input("Seed", 0, 1000000, 42, 1, key="nn_opt_seed")
-                with c2:
-                    n_search = st.number_input("Global Search Samples", 1000, 50000, 4000, 1000, key="nn_opt_n_search")
-                colA, colB, colC = st.columns(3)
-                with colA:
-                    epochs = st.number_input("Surrogate epochs", 50, 1000, 150, 50, key="nn_opt_epochs")
-                with colB:
-                    snapshot_stride = st.number_input("Snapshot stride", 1, 50, 10, 1, key="nn_opt_stride")
-                with colC:
-                    connections_shown = st.number_input("Connections shown", 50, 1000, 200, 50, key="nn_opt_conn")
-                run_opt = st.button("Run Neural Optimization", type="primary", key="nn_opt_run")
+            
+            with st.expander("🧠 AI-Driven Parameter Optimization", expanded=True):
+                st.markdown("""
+                Use the Neural Network to find the optimal scaffold parameters for maximizing slime mold growth.
+                This process explores thousands of combinations instantly to find the best configuration.
+                """)
+                
+                # --- Advanced Settings (Hidden by default) ---
+                with st.expander("⚙️ Advanced Training Settings", expanded=False):
+                    st.caption("Fine-tune how the AI learns and explores the parameter space.")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        seed = st.number_input("Simulation Seed (Reproducibility)", 0, 1000000, 42, 1, key="nn_opt_seed", help="Controls the random number generator. Using the same seed ensures you get the exact same results every time.")
+                    with c2:
+                        n_search = st.number_input("Exploration Depth (Scenarios)", 1000, 50000, 4000, 1000, key="nn_opt_n_search", help="How many different parameter combinations the AI will test to find the best one. More scenarios = better results but slower.")
+                    
+                    colA, colB, colC = st.columns(3)
+                    with colA:
+                        epochs = st.number_input("AI Learning Cycles (Epochs)", 50, 1000, 150, 50, key="nn_opt_epochs", help="How many times the AI reviews the data to learn the patterns. More cycles = smarter AI, but takes longer.")
+                    with colB:
+                        snapshot_stride = st.number_input("Visual Update Rate", 1, 50, 10, 1, key="nn_opt_stride", help="How often (in cycles) to update the 3D brain visualization below.")
+                    with colC:
+                        connections_shown = st.number_input("Network Wiring Complexity", 50, 1000, 200, 50, key="nn_opt_conn", help="Limit the number of connections shown in the 3D visualization to keep it readable.")
+                
+                run_opt = st.button("🚀 Find Optimal Parameters", type="primary", key="nn_opt_run")
+                
                 if run_opt:
                     rng = np.random.default_rng(int(seed))
                     recs = []
@@ -764,35 +882,294 @@ if 'latest_result_full' in st.session_state:
                         rr = run_metrics_only(best[1], model_type)
                         cand.append(rr["metrics"]["avg_growth_rate"])
                     st.session_state.opt_candidate_samples = np.array(cand, dtype=np.float32)
+                
                 if "opt_candidate" in st.session_state:
+                    st.divider()
+                    st.markdown("### 📊 Optimization Results")
+                    
                     base = st.session_state.opt_baseline
                     cand = st.session_state.opt_candidate_samples
+                    
+                    # Statistical Comparison
+                    p_val_cand, d_cand = stats_compare(cand, base)
+                    
+                    # Interpretation Helper Strings
+                    p_interp = "(Significant)" if p_val_cand < 0.05 else "(Not Sig.)"
+                    d_interp = "Small"
+                    if d_cand > 0.5: d_interp = "Medium"
+                    if d_cand > 0.8: d_interp = "Large"
+                    if d_cand > 1.2: d_interp = "Very Large"
+                    
+                    # Metrics Row
+                    m1, m2, m3 = st.columns(3)
+                    
+                    # 1. Growth Gain
+                    gain_pct = (cand.mean() - base.mean()) / base.mean() * 100
+                    m1.metric("Projected Growth Gain", f"{gain_pct:+.1f}%", 
+                              help="Relative increase in growth rate compared to the baseline random parameters.")
+                    
+                    # 2. P-Value
+                    p_display = f"{p_val_cand:.2e}" if p_val_cand < 0.001 else f"{p_val_cand:.4f}"
+                    m2.metric("Statistical Significance (p-value)", f"{p_display}", 
+                              delta=p_interp, delta_color="normal" if p_val_cand < 0.05 else "off",
+                              help="The probability that the observed improvement occurred by chance. p < 0.05 is standard for significance.")
+                    
+                    # 3. Cohen's d
+                    m3.metric("Effect Size (Cohen's d)", f"{d_cand:.2f}", 
+                              delta=d_interp, delta_color="normal",
+                              help="A standardized measure of difference. d=0.2 is small, d=0.5 is medium, d=0.8 is large.")
+                    
+                    # Plot
                     mu, sigma = stats_fit_gaussian(base)
                     fig = go.Figure()
-                    fig.add_trace(go.Histogram(x=base, name="Baseline", opacity=0.55))
-                    fig.add_trace(go.Histogram(x=cand, name="Candidate", opacity=0.55))
-                    fig.update_layout(barmode="overlay", title="Baseline vs Candidate")
-                    fig.update_traces(marker_line_width=0.5, marker_line_color="white")
-                    xs = np.linspace(base.min(), base.max(), 200)
-                    pdf = (1/(sigma*np.sqrt(2*np.pi))) * np.exp(-0.5*((xs-mu)/sigma)**2)
-                    pdf_scaled = pdf * (base.size * (xs[1]-xs[0]))
-                    fig.add_trace(go.Scatter(x=xs, y=pdf_scaled, mode="lines", name="Baseline Normal Fit"))
+                    fig.add_trace(go.Histogram(x=base, name="Baseline (Random)", opacity=0.6, marker_color="#6c757d"))
+                    fig.add_trace(go.Histogram(x=cand, name="AI Optimized Model", opacity=0.8, marker_color="#2ecc71"))
+                    fig.update_layout(
+                        barmode="overlay", 
+                        title="Growth Rate Distribution: Baseline vs. Optimized",
+                        xaxis_title="Growth Rate (mm/hr)",
+                        yaxis_title="Frequency",
+                        template=PLOTLY_TEMPLATE,
+                        legend=dict(orientation="h", y=1.1)
+                    )
                     st.plotly_chart(fig, use_container_width=True, key="nn_candidate_hist")
-                    p_val_cand, d_cand = stats_compare(cand, base)
-                    pow_cand = stats_power(d_cand, len(cand), len(base))
-                    st.metric("Candidate p-value", f"{p_val_cand:.4f}")
-                    st.metric("Candidate Cohen's d", f"{d_cand:.3f}")
-                    st.metric("Candidate Power", f"{pow_cand:.3f}")
+                    
+                    # --- NEW: Feature Importance ---
+                    st.divider()
+                    st.markdown("### 🧠 AI Insights: What drives growth?")
+                    st.markdown("The neural network analyzed which parameters had the biggest impact on the simulation outcome.")
+                    
+                    show_normalized = st.toggle("Show Normalized Impact (Relative %)", value=False, key="nn_imp_norm_toggle")
+                    
+                    if "opt_model" in st.session_state and "opt_candidate" in st.session_state:
+                        # Calculate sensitivity for the optimal parameters
+                        vec = opt_to_vector(st.session_state.opt_candidate)
+                        # We need to reshape vec to (1, -1) inside gradient_sensitivity or here
+                        # The function in nn.py handles reshape: xs = scaler.transform(x.reshape(1, -1))
+                        # But wait, opt_to_vector returns a 1D array.
+                        
+                        sens = gradient_sensitivity(st.session_state.opt_model, st.session_state.opt_scaler, vec)
+                        
+                        if show_normalized:
+                            sens = sens / (sens.max() + 1e-9) * 100
+                        
+                        # Create a DataFrame for plotting (Restored)
+                        sens_df = pd.DataFrame({
+                            "Parameter": [PARAM_DISPLAY_NAMES.get(k, k) for k in OPT_ORDER],
+                            "Importance": sens
+                        })
+
+                        # --- 2. Create Group Mapping ---
+                        # Define groups based on parameter keys
+                        GROUPS = {
+                            "pillar_count": "Geometry / Structure",
+                            "pillar_size_mm": "Geometry / Structure",
+                            "channel_width_mm": "Geometry / Structure",
+                            "channel_node_size_mm": "Geometry / Structure",
+                            "media_depth_mm": "Geometry / Structure",
+                            
+                            "scaffold_stiffness_kPa": "Material / Mechanics",
+                            "elasticity": "Material / Mechanics",
+                            "scaffold_density_g_cm3": "Material / Mechanics",
+                            "initial_mass_g": "Material / Mechanics",
+                            
+                            "replenish_freq_hr": "Media / Transport",
+                            "dmem_glucose": "Media / Transport",
+                            "dmem_glutamine": "Media / Transport",
+                            "dmem_pyruvate": "Media / Transport",
+                            
+                            "ion_na": "Ions / Environment",
+                            "ion_k": "Ions / Environment",
+                            "ion_cl": "Ions / Environment",
+                            "ion_ca": "Ions / Environment",
+                            "light_lumens": "Ions / Environment"
+                        }
+                        
+                        # Add group column
+                        sens_df["Group"] = [GROUPS.get(k, "Other") for k in OPT_ORDER]
+                        
+                        # --- 3. Sorting & Ranking ---
+                        # Sort descending by importance for the chart (biggest at top)
+                        sens_df = sens_df.sort_values(by="Importance", ascending=True) # Ascending for horizontal bar (bottom to top)
+                        
+                        # Calculate relative importance (0-1) for styling
+                        max_imp = sens_df["Importance"].max()
+                        sens_df["RelImp"] = sens_df["Importance"] / max_imp
+                        
+                        # --- 4. Styling Logic (Opacity & Color) ---
+                        # Color mapping for groups
+                        GROUP_COLORS = {
+                            "Geometry / Structure": "#1f77b4", # Blue
+                            "Material / Mechanics": "#2ca02c", # Green
+                            "Media / Transport": "#ff7f0e",    # Orange
+                            "Ions / Environment": "#9467bd"    # Purple
+                        }
+                        
+                        # Generate colors with opacity based on importance
+                        # Top 3 -> 1.0 opacity, Mid -> 0.7, Low -> 0.4
+                        # We need to rank them descending first to determine top 3
+                        rank_df = sens_df.sort_values(by="Importance", ascending=False).reset_index(drop=True)
+                        top_3_idx = rank_df.index[:3]
+                        
+                        colors = []
+                        opacities = []
+                        text_labels = []
+                        
+                        for idx, row in sens_df.iterrows():
+                            # Determine rank (0 is highest)
+                            rank = rank_df[rank_df["Parameter"] == row["Parameter"]].index[0]
+                            
+                            # Opacity logic
+                            if rank < 3:
+                                op = 1.0
+                                txt = f"{row['Importance']:.1f}%" if show_normalized else f"{row['Importance']:.2f}"
+                            elif rank < 8:
+                                op = 0.85
+                                txt = ""
+                            else:
+                                op = 0.65
+                                txt = ""
+                                
+                            c_base = GROUP_COLORS.get(row["Group"], "#7f7f7f")
+                            colors.append(c_base)
+                            opacities.append(op)
+                            text_labels.append(txt)
+                            
+                        # --- 5. Build Chart (Grouped Traces) ---
+                        fig_imp = go.Figure()
+                        
+                        # We must preserve the sorted order of parameters on the Y-axis
+                        y_order = rank_df["Parameter"].iloc[::-1].tolist()
+                        
+                        # Iterate through groups to create separate traces for the legend
+                        for g_name, g_color in GROUP_COLORS.items():
+                            # Filter data for this group
+                            g_df = sens_df[sens_df["Group"] == g_name]
+                            
+                            if g_df.empty:
+                                continue
+                                
+                            # Calculate opacities and text for this subset
+                            g_opacities = []
+                            g_texts = []
+                            
+                            for _, row in g_df.iterrows():
+                                # Determine rank based on global dataframe
+                                rank = rank_df[rank_df["Parameter"] == row["Parameter"]].index[0]
+                                if rank < 3:
+                                    g_opacities.append(1.0)
+                                    g_texts.append(f"{row['Importance']:.1f}%" if show_normalized else f"{row['Importance']:.2f}")
+                                elif rank < 8:
+                                    g_opacities.append(0.85)
+                                    g_texts.append("")
+                                else:
+                                    g_opacities.append(0.65)
+                                    g_texts.append("")
+
+                            fig_imp.add_trace(go.Bar(
+                                x=g_df["Importance"],
+                                y=g_df["Parameter"],
+                                name=g_name,
+                                orientation='h',
+                                marker=dict(color=g_color, opacity=g_opacities),
+                                text=g_texts,
+                                textposition='outside',
+                                hovertemplate="<b>%{y}</b><br>Importance: %{x:.3f}<br>Group: " + g_name + "<extra></extra>"
+                            ))
+                        
+                        # --- 6. Layout Improvements ---
+                        fig_imp.update_layout(
+                            title=dict(
+                                text="Parameter Sensitivity Analysis",
+                                y=0.95,
+                                x=0.0,
+                                xanchor='left',
+                                yanchor='top'
+                            ),
+                            # Subtitle via annotation
+                            annotations=[
+                                dict(
+                                    x=0.0,
+                                    y=1.08,
+                                    xref='paper',
+                                    yref='paper',
+                                    text="Higher values indicate stronger influence on predicted growth rate",
+                                    showarrow=False,
+                                    font=dict(size=12, color="gray"),
+                                    xanchor='left'
+                                ),
+                                # "Primary Driver" Callout - Adjusted to avoid overlap
+                                dict(
+                                    x=rank_df.iloc[0]["Importance"],
+                                    y=rank_df.iloc[0]["Parameter"],
+                                    xref='x',
+                                    yref='y',
+                                    text="Primary Driver",
+                                    showarrow=True,
+                                    arrowhead=2,
+                                    ax=80, # Increased distance to clear the value label
+                                    ay=0,
+                                    standoff=30, # Stop arrow short so it doesn't cross the text
+                                    xanchor="left",
+                                    font=dict(color=GROUP_COLORS.get(rank_df.iloc[0]["Group"], "white"))
+                                )
+                            ],
+                            xaxis=dict(
+                                title=None, 
+                                showgrid=True,
+                                gridcolor='rgba(128,128,128,0.2)',
+                                zeroline=False
+                            ),
+                            yaxis=dict(
+                                title=None,
+                                tickfont=dict(size=11),
+                                categoryorder='array', # Enforce sorted order
+                                categoryarray=y_order
+                            ),
+                            height=600, 
+                            margin=dict(l=200, t=100, r=120, b=50), # Adjusted right margin for annotation
+                            template=PLOTLY_TEMPLATE,
+                            bargap=0.4,
+                            legend=dict(
+                                orientation="v",
+                                yanchor="bottom",
+                                y=0.02,
+                                xanchor="right",
+                                x=0.98,
+                                bgcolor="#0f172a", # Solid dark slate
+                                bordercolor="rgba(255, 255, 255, 0.1)",
+                                borderwidth=1,
+                                title_text="Parameter Category",
+                                title_font=dict(size=12, color="rgba(255, 255, 255, 0.7)"),
+                                font=dict(size=11, color="rgba(255, 255, 255, 0.9)"),
+                                itemsizing="constant"
+                            )
+                        )
+                        
+                        st.plotly_chart(fig_imp, use_container_width=True, key="nn_feature_importance")
+
+                    st.divider()
+                    st.markdown("### 🎛️ Recommended Parameters")
+                    st.markdown("The AI suggests these parameters to achieve the growth shown above. You can fine-tune them before confirming.")
+                    
                     labels = OPT_ORDER
                     values = [float(st.session_state.opt_candidate[k]) for k in labels]
                     sliders = {}
+                    
+                    # Group sliders nicely
                     cols = st.columns(3)
                     for i, k in enumerate(labels):
                         lo, hi = OPT_PARAM_RANGES[k]
                         default = float(values[i])
+                        display_name = PARAM_DISPLAY_NAMES.get(k, k.replace("_", " ").title())
                         with cols[i % 3]:
-                            sliders[k] = st.slider(k, float(lo), float(hi), default, step=(0.01 if isinstance(lo, float) else 1.0), key=f"nn_opt_slider_{k}")
-                    confirm = st.button("Confirm Final Parameters", type="primary", key="nn_opt_confirm")
+                            sliders[k] = st.slider(display_name, float(lo), float(hi), default, step=(0.01 if isinstance(lo, float) else 1.0), key=f"nn_opt_slider_{k}")
+                    
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    col_conf, col_dummy = st.columns([1, 2])
+                    with col_conf:
+                        confirm = st.button("✅ Apply These Parameters", type="primary", key="nn_opt_confirm", use_container_width=True)
+                    
                     if confirm:
                         fp = {k: float(sliders[k]) for k in sliders}
                         fp["pillar_count"] = int(fp["pillar_count"])
@@ -808,76 +1185,99 @@ if 'latest_result_full' in st.session_state:
                                 rr = run_simulation_logic(fp, model_type)
                                 fs.append(rr["metrics"]["avg_growth_rate"])
                             st.session_state.opt_final_samples = np.array(fs, dtype=np.float32)
+                
                 if "opt_final_samples" in st.session_state:
+                    st.divider()
+                    st.markdown("### 🏆 Final Validation")
+                    
                     base = st.session_state.opt_baseline
                     cand = st.session_state.opt_candidate_samples
                     fin = st.session_state.opt_final_samples
-                    mb = float(np.mean(base)); mc = float(np.mean(cand)); mf = float(np.mean(fin))
-                    fig2 = go.Figure()
-                    fig2.add_trace(go.Histogram(x=base, name="Baseline", opacity=0.55))
-                    fig2.add_trace(go.Histogram(x=cand, name="Candidate", opacity=0.55))
-                    fig2.add_trace(go.Histogram(x=fin, name="Final", opacity=0.55))
-                    fig2.update_layout(barmode="overlay", title="Baseline vs Candidate vs Final")
-                    fig2.update_traces(marker_line_width=0.5, marker_line_color="white")
-                    fig2.add_shape(type="line", x0=mb, x1=mb, y0=0, y1=1, yref="paper", line=dict(color="blue", dash="dash"))
-                    fig2.add_shape(type="line", x0=mc, x1=mc, y0=0, y1=1, yref="paper", line=dict(color="orange", dash="dash"))
-                    fig2.add_shape(type="line", x0=mf, x1=mf, y0=0, y1=1, yref="paper", line=dict(color="green", dash="dash"))
-                    st.plotly_chart(fig2, use_container_width=True, key="nn_final_hist")
+                    
                     p_val_fin, d_fin = stats_compare(fin, base)
-                    pow_fin = stats_power(d_fin, len(fin), len(base))
-                    st.metric("Final p-value", f"{p_val_fin:.4f}")
-                    st.metric("Final Cohen's d", f"{d_fin:.3f}")
-                    st.metric("Final Power", f"{pow_fin:.3f}")
-                    xvec = opt_to_vector(st.session_state.opt_final)
-                    sens = gradient_sensitivity(st.session_state.opt_model, st.session_state.opt_scaler, xvec)
-                    fig3 = go.Figure(go.Bar(x=labels, y=sens))
-                    fig3.update_layout(title="Parameter Sensitivity (|gradients|)", xaxis_title="Parameter", yaxis_title="Sensitivity")
-                    st.plotly_chart(fig3, use_container_width=True, key="nn_sensitivity_bar")
-                    idx = st.slider("NN Snapshot Index", 0, len(st.session_state.opt_snaps)-1, 0, 1, key="nn_snap_idx")
-                    layer_gap = st.slider("Layer spacing", 1.0, 4.0, 2.0, 0.1, key="nn_layer_gap")
-                    node_gap = st.slider("Node spacing", 0.8, 3.0, 1.5, 0.1, key="nn_node_gap")
-                    act_src = st.selectbox("Activation source", ["None","Candidate","Final"], key="nn_act_src")
-                    layout_type = st.selectbox("Layout", ["Hierarchical","Radial"], index=0, key="nn_layout")
-                    label_mode_ui = st.selectbox("Labels", ["Auto","Important only","All","None"], index=0, key="nn_label_mode")
-                    edge_thr = st.slider("Edge threshold", 0.0, 1.0, 0.15, 0.05, key="nn_edge_thr")
-                    show_arrows = st.checkbox("Show arrows on edges", value=True, key="nn_show_arrows")
-                    view_mode_ui = st.selectbox("View mode", ["Analysis","Presentation"], index=0, key="nn_view_mode")
-                    top_paths_k = st.number_input("Top paths highlighted", 1, 20, 8, 1, key="nn_top_paths_k")
-                    act_sign = st.checkbox("Color by activation sign", value=False, key="nn_activation_sign")
-                    acts = None
-                    if act_src == "Candidate" and "opt_candidate" in st.session_state:
-                        xv = opt_to_vector(st.session_state.opt_candidate)
-                        xs = st.session_state.opt_scaler.transform(xv.reshape(1, -1)).astype(np.float32)
-                        t = torch.tensor(xs)
-                        o, h1, h2 = st.session_state.opt_model(t)
-                        acts = {"in": xs.squeeze(), "h1": h1.squeeze().detach().cpu().numpy(), "h2": h2.squeeze().detach().cpu().numpy(), "out": float(o.squeeze().detach().cpu().numpy())}
-                    elif act_src == "Final" and "opt_final" in st.session_state:
-                        xv = opt_to_vector(st.session_state.opt_final)
-                        xs = st.session_state.opt_scaler.transform(xv.reshape(1, -1)).astype(np.float32)
-                        t = torch.tensor(xs)
-                        o, h1, h2 = st.session_state.opt_model(t)
-                        acts = {"in": xs.squeeze(), "h1": h1.squeeze().detach().cpu().numpy(), "h2": h2.squeeze().detach().cpu().numpy(), "out": float(o.squeeze().detach().cpu().numpy())}
-                    import importlib
-                    importlib.reload(vis)
-                    fig4 = vis.draw_nn(
-                        st.session_state.opt_snaps[idx],
-                        activations=acts,
-                        layer_gap=layer_gap,
-                        node_gap=node_gap,
-                        show_key=True,
-                        max_edges=int(connections_shown),
-                        layout=("radial" if layout_type == "Radial" else "hierarchical"),
-                        label_mode={"Auto":"auto","Important only":"important","All":"all","None":"none"}[label_mode_ui],
-                        edge_threshold=float(edge_thr),
-                        show_arrows=bool(show_arrows),
-                        top_paths_k=int(top_paths_k),
-                        show_activation_sign=bool(act_sign),
-                        view_mode=("presentation" if view_mode_ui == "Presentation" else "analysis"),
-                        palette="colorblind",
+                    
+                    mb = float(np.mean(base)); mc = float(np.mean(cand)); mf = float(np.mean(fin))
+                    
+                    fig2 = go.Figure()
+                    fig2.add_trace(go.Histogram(x=base, name="Baseline", opacity=0.5, marker_color="gray"))
+                    fig2.add_trace(go.Histogram(x=cand, name="AI Projected", opacity=0.5, marker_color="orange"))
+                    fig2.add_trace(go.Histogram(x=fin, name="Actual Result", opacity=0.8, marker_color="green"))
+                    
+                    fig2.update_layout(
+                        barmode="overlay", 
+                        title="Validation: Model Performance Comparison",
+                        xaxis_title="Growth Rate (mm/hr)",
+                        template=PLOTLY_TEMPLATE
                     )
-                    st.plotly_chart(fig4, use_container_width=True, key="nn_nn_viz")
+                    
+                    # Add vertical lines for means
+                    fig2.add_vline(x=mb, line_dash="dash", line_color="gray", annotation_text="Base Mean")
+                    fig2.add_vline(x=mf, line_dash="dash", line_color="green", annotation_text="Final Mean")
+                    
+                    st.plotly_chart(fig2, use_container_width=True, key="nn_final_hist")
+                    
+                    st.success(f"**Success!** The optimized parameters achieved a mean growth rate of **{mf:.2f} mm/hr**, compared to the baseline of **{mb:.2f} mm/hr**.")
+                    
+                    # Network Viz
+                    with st.expander("🕸️ Neural Network Internals (Visualization)", expanded=False):
+                        idx = st.slider("Training Snapshot", 0, len(st.session_state.opt_snaps)-1, 0, 1, key="nn_snap_idx")
+                        
+                        col_v1, col_v2 = st.columns(2)
+                        with col_v1:
+                            view_mode_ui = st.selectbox("View Mode", ["Analysis","Presentation"], index=0, key="nn_view_mode")
+                            layout_type = st.selectbox("Layout Style", ["Hierarchical","Radial"], index=0, key="nn_layout")
+                        with col_v2:
+                            act_src = st.selectbox("Show Activations For", ["None","Candidate","Final"], key="nn_act_src")
+                            show_arrows = st.checkbox("Show Flow Arrows", value=True, key="nn_show_arrows")
 
-    with tab6:
+                        # Hidden advanced viz settings
+                        # layer_gap = st.slider("Layer spacing", 1.0, 4.0, 2.0, 0.1, key="nn_layer_gap")
+                        # node_gap = st.slider("Node spacing", 0.8, 3.0, 1.5, 0.1, key="nn_node_gap")
+                        # edge_thr = st.slider("Edge threshold", 0.0, 1.0, 0.15, 0.05, key="nn_edge_thr")
+                        
+                        # Use defaults for hidden ones
+                        layer_gap = 2.0
+                        node_gap = 1.5
+                        edge_thr = 0.15
+                        label_mode_ui = "Auto"
+                        top_paths_k = 8
+                        act_sign = False
+
+                        acts = None
+                        if act_src == "Candidate" and "opt_candidate" in st.session_state:
+                            xv = opt_to_vector(st.session_state.opt_candidate)
+                            xs = st.session_state.opt_scaler.transform(xv.reshape(1, -1)).astype(np.float32)
+                            t = torch.tensor(xs)
+                            o, h1, h2 = st.session_state.opt_model(t)
+                            acts = {"in": xs.squeeze(), "h1": h1.squeeze().detach().cpu().numpy(), "h2": h2.squeeze().detach().cpu().numpy(), "out": float(o.squeeze().detach().cpu().numpy())}
+                        elif act_src == "Final" and "opt_final" in st.session_state:
+                            xv = opt_to_vector(st.session_state.opt_final)
+                            xs = st.session_state.opt_scaler.transform(xv.reshape(1, -1)).astype(np.float32)
+                            t = torch.tensor(xs)
+                            o, h1, h2 = st.session_state.opt_model(t)
+                            acts = {"in": xs.squeeze(), "h1": h1.squeeze().detach().cpu().numpy(), "h2": h2.squeeze().detach().cpu().numpy(), "out": float(o.squeeze().detach().cpu().numpy())}
+                        
+                        import importlib
+                        importlib.reload(vis)
+                        fig4 = vis.draw_nn(
+                            st.session_state.opt_snaps[idx],
+                            activations=acts,
+                            layer_gap=layer_gap,
+                            node_gap=node_gap,
+                            show_key=True,
+                            max_edges=int(connections_shown),
+                            layout=("radial" if layout_type == "Radial" else "hierarchical"),
+                            label_mode={"Auto":"auto","Important only":"important","All":"all","None":"none"}[label_mode_ui],
+                            edge_threshold=float(edge_thr),
+                            show_arrows=bool(show_arrows),
+                            top_paths_k=int(top_paths_k),
+                            show_activation_sign=bool(act_sign),
+                            view_mode=("presentation" if view_mode_ui == "Presentation" else "analysis"),
+                            palette="colorblind",
+                        )
+                        st.plotly_chart(fig4, use_container_width=True, key="nn_nn_viz")
+
+    if selected_tab == tabs[4]:
         st.markdown("## Export")
         st.divider()
         run_df = pd.DataFrame(st.session_state.run_history) if 'run_history' in st.session_state else pd.DataFrame()
