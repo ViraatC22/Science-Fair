@@ -19,6 +19,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from simulation.physics import run_simulation_logic, LITERATURE_DATA, compute_metrics
+from simulation.export_utils import generate_improved_mesh, generate_heightmap_mesh, export_to_bundle, calculate_voxel_size
 try:
     from backend.nn import train_surrogate, gradient_sensitivity
 except ModuleNotFoundError:
@@ -1279,7 +1280,160 @@ if 'latest_result_full' in st.session_state:
 
     if selected_tab == tabs[4]:
         st.markdown("## Export")
+        
+        # --- 3D GEOMETRY EXPORT (NEW) ---
+        st.subheader("📦 3D Geometry Export (CAD/STL)")
+        st.caption("Generate a high-quality, manifold STL mesh for SolidWorks/manufacturing.")
+        
+        if 'latest_result_full' not in st.session_state:
+            st.warning("⚠️ No simulation data available. Please run a simulation first.")
+        else:
+            res = st.session_state.latest_result_full
+            # Ensure scaffold data exists
+            if "scaffold_data" not in res:
+                st.error("Scaffold geometry data missing from the latest run.")
+            else:
+                # Select what to export
+                export_target = st.radio(
+                    "Export Target (What to Visualize)", 
+                    ["Scaffold Structure (Gray)", "Biological Growth (Green)", "Combined Model"],
+                    index=1,
+                    horizontal=True,
+                    help="Select 'Biological Growth' to export the high-fidelity organic structure. 'Combined Model' includes the pillars."
+                )
+
+                with st.expander("🛠️ Advanced Mesh Settings", expanded=True):
+                    z_scale = st.slider(
+                        "Z Scale Factor (Vertical Exaggeration)", 
+                        min_value=1.0, 
+                        max_value=500.0, 
+                        value=50.0, 
+                        step=1.0,
+                        help="Multiplies the height of the features to make them visible in 3D prints. Use 100+ for very subtle textures."
+                    )
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        smooth_sigma = st.slider("Smoothing Sigma (Voxels)", 0.0, 2.0, 0.4, 0.1, help="Lower values (0.4) preserve ridges. Higher values (1.0+) make blobs.")
+                    with c2:
+                        upsample = st.checkbox("High Quality (Upsample 2x)", value=True, help="Increases resolution to capture fine ridges.")
+                        decimate = st.checkbox("Decimate Mesh", value=True)
+                        target_faces = st.number_input("Target Face Count", 1000, 500000, 50000, 1000, disabled=not decimate)
+                
+                if st.button("Generate Onshape-Ready Bundle", type="primary", key="btn_gen_stl"):
+                    with st.spinner("Processing geometry (SDF → Marching Cubes → Conditioning)..."):
+                        try:
+                            scaffold = res.get("scaffold_data")
+                            growth = res.get("growth_data")
+                            params = res.get("params", {})
+                            # Estimate voxel size
+                            v_size = calculate_voxel_size(params)
+                            
+                            # Parameters
+                            floor_thresh = 0.8
+                            
+                            if export_target == "Biological Growth (Green)":
+                                if growth is None:
+                                    st.error("No growth data available in this result.")
+                                    st.stop()
+                                
+                                # One Matrix Strategy: Use 2D heightmap
+                                if growth.ndim == 3:
+                                    # If 3D, project max to 2D? Or just use as is?
+                                    # User specifically requested "One Matrix" 2D strategy.
+                                    # Assuming growth is 2D for this mode usually.
+                                    data_2d = np.max(growth, axis=2)
+                                else:
+                                    data_2d = growth
+                                
+                                # Generate Heightmap Mesh
+                                # Use voxel_size_mm=1.0 to match the user's "60-unit base" mental model
+                                # and ensure the Z-scale of 20.0 produces the expected 20-30% height ratio.
+                                mesh = generate_heightmap_mesh(
+                                    data_2d, 
+                                    floor_threshold=floor_thresh, 
+                                    voxel_size_mm=1.0, 
+                                    z_scale=z_scale,
+                                    base_z=0.0
+                                )
+                                filename_suffix = "growth"
+
+                            elif export_target == "Combined Model":
+                                if growth is None or scaffold is None:
+                                    st.error("Data missing for combined export.")
+                                    st.stop()
+                                
+                                # Prepare 2D Scaffold
+                                if scaffold.ndim == 3:
+                                    scaffold_2d = np.max(scaffold, axis=2)
+                                else:
+                                    scaffold_2d = scaffold
+                                
+                                # Prepare 2D Growth
+                                if growth.ndim == 3:
+                                    growth_2d = np.max(growth, axis=2)
+                                else:
+                                    growth_2d = growth
+                                    
+                                # Combine: Max of both
+                                combined_2d = np.maximum(scaffold_2d, growth_2d)
+                                
+                                # Generate Heightmap Mesh
+                                # Use voxel_size_mm=1.0 to match the user's "60-unit base" mental model
+                                mesh = generate_heightmap_mesh(
+                                    combined_2d, 
+                                    floor_threshold=floor_thresh, 
+                                    voxel_size_mm=1.0, 
+                                    z_scale=z_scale,
+                                    base_z=0.0
+                                )
+                                filename_suffix = "combined"
+                            else:
+                                # Scaffold Only (keep old logic or update?)
+                                # Let's update to heightmap for consistency if 2D
+                                if scaffold.ndim == 3:
+                                    # Use old 3D method for full 3D scaffold if needed
+                                    data_to_mesh = scaffold
+                                    mesh = generate_improved_mesh(
+                                        data_to_mesh, 
+                                        voxel_size_mm=v_size, 
+                                        smoothing_sigma=smooth_sigma, 
+                                        target_faces=target_faces if decimate else None,
+                                        is_binary=True,
+                                        iso_level=0.0
+                                    )
+                                else:
+                                    # 2D Scaffold
+                                    mesh = generate_heightmap_mesh(
+                                        scaffold, 
+                                        floor_threshold=0.1, # Pillars exist > 0
+                                        voxel_size_mm=1.0, 
+                                        z_scale=z_scale,
+                                        base_z=0.0
+                                    )
+                                filename_suffix = "scaffold"
+                                st.info("💡 Tip: To export the detailed organic texture, select 'Biological Growth' or 'Combined Model'.")
+
+                            # Export to Bundle (ZIP with Manifest)
+                            zip_bytes = export_to_bundle(mesh, filename_base=f"{filename_suffix}_{params.get('model_type', 'custom')}")
+                            
+                            # Info
+                            st.success(f"Mesh Generated! Target: {export_target}, Vertices: {len(mesh.vertices)}, Faces: {len(mesh.faces)}")
+                            
+                            # Download
+                            st.download_button(
+                                label="Download Onshape Bundle (ZIP)",
+                                data=zip_bytes,
+                                file_name=f"scaffold_onshape_{int(time.time())}.zip",
+                                mime="application/zip",
+                                type="primary"
+                            )
+                            
+                        except Exception as e:
+                            st.error(f"Mesh generation failed: {str(e)}")
+                            # st.exception(e) # Uncomment for debugging
+
         st.divider()
+        st.subheader("📊 Data Export (CSV/JSON/PDF)")
         run_df = pd.DataFrame(st.session_state.run_history) if 'run_history' in st.session_state else pd.DataFrame()
         formats = st.multiselect("File format options", ["PDF", "CSV", "Excel", "JSON"], default=["CSV"], key="export_formats")
         range_choice = st.radio("Export range", ["Current view", "Selected items", "Custom range"], index=0, key="export_range")
