@@ -37,10 +37,16 @@
   - Metadata inclusion toggle
   - Scheduling UI for future exports
   - Parameter validation and error handling in the UI
+  - **3D Model Export (STL):**
+    - Generates manifold (watertight) STL files suitable for 3D printing and CAD.
+    - Utilizes a "One Matrix" strategy, converting 2.5D simulation data into a solid model with a user-defined floor.
+    - Features a **Global Z-Exaggeration** slider (up to 500x) to vertically scale subtle surface details, making them physically apparent in prints.
+    - Constructs a solid base under the model to ensure printability.
 
 ## Directory Overview
 
 - `Streamlit_App/app/main.py` — Streamlit app entry; UI and tab logic
+- `Streamlit_App/simulation/export_utils.py` — Geometry engine for generating 3D printable STL files from 2D heightmaps.
 - `Streamlit_App/simulation/physics.py` — Simulation and metric computation
 - `backend/nn.py` — Surrogate model (PyTorch), training, and sensitivity
 - `backend/opt.py` — Parameter sampling/validation and global search
