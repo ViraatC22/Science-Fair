@@ -427,6 +427,7 @@ if run_button:
     with st.spinner("Running simulation... (Computing specialized metrics...)"):
         new_result = run_simulation_logic(parameters, model_type)
     
+    new_result['metrics']['source'] = 'manual'
     st.session_state.run_history.append(new_result['metrics']) # Append metrics to history
     st.session_state.latest_result_full = new_result # Store full result for viz
     
@@ -509,76 +510,91 @@ if 'latest_result_full' in st.session_state:
 
     if selected_tab == tabs[1]:
         st.markdown(f"## Advanced Diagnostics: {model_type}")
-        st.markdown("*Detailed analytical visualizations tracking evolutionary trends across runs.*")
         st.divider()
-        
+
         # Prepare data
         run_df = pd.DataFrame(st.session_state.run_history) if 'run_history' in st.session_state else pd.DataFrame()
-        
+
         if run_df.empty:
             st.info("Run at least one simulation to view diagnostics.")
         else:
+            has_nn_runs = 'source' in run_df.columns and (run_df['source'] == 'nn_optimized').any()
+            has_base_runs = 'source' in run_df.columns and (run_df['source'] != 'nn_optimized').any()
+
+            # --- KPI Summary Bar (only when NN data exists) ---
+            if has_nn_runs and has_base_runs:
+                base_df = run_df[run_df['source'] != 'nn_optimized']
+                nn_df = run_df[run_df['source'] == 'nn_optimized']
+
+                kpi_metrics = [
+                    ("total_network_length", "Network Length"),
+                    ("num_junctions", "Connectivity"),
+                    ("fractal_dimension", "Fractal Dim."),
+                    ("mean_tortuosity", "Tortuosity"),
+                ]
+                available_kpis = [(col, name) for col, name in kpi_metrics if col in run_df.columns]
+
+                kpi_cols = st.columns(len(available_kpis))
+                for i, (col_name, display_name) in enumerate(available_kpis):
+                    b_mean = base_df[col_name].mean()
+                    n_mean = nn_df[col_name].mean()
+                    pct = ((n_mean - b_mean) / (abs(b_mean) + 1e-9)) * 100
+                    # For tortuosity, lower is better
+                    direction = "inverse" if "tortuosity" in col_name else "normal"
+                    with kpi_cols[i]:
+                        st.metric(display_name, f"{n_mean:.2f}",
+                                  f"{pct:+.1f}%",
+                                  delta_color=("inverse" if direction == "inverse" else "normal"))
+
+                st.divider()
+
             # Controls
             col_ctrl1, col_ctrl2 = st.columns([3, 1])
             with col_ctrl2:
-                normalize = st.toggle("Normalize Metrics (0-1)", key="adv_norm_toggle")
+                normalize = st.toggle("Normalize (0-1)", key="adv_norm_toggle")
 
-            # Layout: 2x2 Grid of Key Topological Metrics
+            # 2x2 Grid
             col1, col2 = st.columns(2)
-            
-            # 1. Network Length (Structural - Blue)
+
             with col1:
-                # Calculate baseline from first run if available
-                base_len = run_df["total_network_length"].iloc[0] if not run_df.empty else 0
-                ref_band = (base_len * 0.98, base_len * 1.02) if base_len > 0 else None
-                
                 fig1 = vis.draw_evolution_plot(
-                    run_df, "total_network_length", "Network Length", 
-                    subtitle="Total biological mass and reach of the organism.",
-                    unit="mm",
-                    color="#1f77b4", ref_band=ref_band, ref_name="Baseline ±2%",
+                    run_df, "total_network_length", "Network Length",
+                    unit="mm", color="#5b8bd4",
                     normalize=normalize, template=PLOTLY_TEMPLATE
                 )
-                st.plotly_chart(fig1, use_container_width=True)
+                st.plotly_chart(fig1, use_container_width=True, key="diag_net_len")
 
-            # 2. Junctions (Structural - Blue)
             with col2:
                 fig2 = vis.draw_evolution_plot(
-                    run_df, "num_junctions", "Connectivity (Junctions)", 
-                    subtitle="Number of branching points (nodes) in the network.",
-                    unit="count",
-                    color="#1f77b4", ref_band=None, 
+                    run_df, "num_junctions", "Junctions",
+                    unit="count", color="#5b8bd4",
                     normalize=normalize, template=PLOTLY_TEMPLATE
                 )
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, use_container_width=True, key="diag_junctions")
 
             col3, col4 = st.columns(2)
 
-            # 3. Fractal Dimension (Complexity - Green)
             with col3:
                 if "fractal_dimension" in run_df.columns:
                     fig3 = vis.draw_evolution_plot(
-                        run_df, "fractal_dimension", "Fractal Dimension", 
-                        subtitle="Complexity of the pattern (1.0 = Line, 2.0 = Plane).",
-                        unit="Df",
-                        color="#2ca02c", ref_band=(1.3, 1.7), ref_name="Biological Complexity",
+                        run_df, "fractal_dimension", "Fractal Dimension",
+                        unit="Df", color="#6dbe72",
+                        ref_band=(1.3, 1.7),
                         normalize=normalize, template=PLOTLY_TEMPLATE
                     )
-                    st.plotly_chart(fig3, use_container_width=True)
+                    st.plotly_chart(fig3, use_container_width=True, key="diag_fractal")
                 else:
                     st.info("Fractal dimension not available for this model.")
 
-            # 4. Tortuosity/Efficiency (Transport Cost - Red)
             with col4:
                 if "mean_tortuosity" in run_df.columns:
                     fig4 = vis.draw_evolution_plot(
-                        run_df, "mean_tortuosity", "Transport Efficiency (Tortuosity)", 
-                        subtitle="Path efficiency. 1.0 is a straight line (Optimal).",
-                        unit="τ",
-                        color="#d62728", ref_band=(1.0, 1.3), ref_name="Optimal Transport",
+                        run_df, "mean_tortuosity", "Tortuosity",
+                        unit="\u03C4", color="#c45c5c",
+                        ref_band=(1.0, 1.3),
                         normalize=normalize, template=PLOTLY_TEMPLATE
                     )
-                    st.plotly_chart(fig4, use_container_width=True)
+                    st.plotly_chart(fig4, use_container_width=True, key="diag_tortuosity")
                 else:
                     st.info("Tortuosity not available for this model.")
         
@@ -735,40 +751,116 @@ if 'latest_result_full' in st.session_state:
 
     # --- STATISTICAL ANALYSIS TAB ---
     if selected_tab == tabs[2]:
-        st.markdown("## 📈 Statistical Analysis vs. Literature")
-        st.markdown("*Compare your simulation runs against published data.*")
+        st.markdown("## 📈 Statistical Analysis")
         st.divider()
-        
+
         run_df = pd.DataFrame(st.session_state.run_history)
-        
+        has_nn = 'source' in run_df.columns and (run_df['source'] == 'nn_optimized').any()
+        has_baseline = 'source' in run_df.columns and (run_df['source'] != 'nn_optimized').any()
+
         if len(run_df) < 2:
             st.markdown('<div class="info-box">Run at least 2 simulations to perform statistical analysis.</div>', unsafe_allow_html=True)
         else:
-            st.markdown(f"### Analysis based on {len(run_df)} simulation runs")
-            
-            st.markdown("#### 1. One-Sample t-tests (Your Model vs. Literature)")
+            # --- Section 1: NN-Optimized vs Baseline (shown first if NN data exists) ---
+            if has_nn and has_baseline:
+                baseline_df = run_df[run_df['source'] != 'nn_optimized']
+                nn_df = run_df[run_df['source'] == 'nn_optimized']
+
+                st.markdown("### Baseline vs. NN-Optimized Scaffold")
+                st.markdown(f"*Comparing **{len(baseline_df)}** baseline runs against **{len(nn_df)}** NN-optimized runs.*")
+
+                # Key metrics comparison
+                compare_metrics = [
+                    ("avg_growth_rate", "Growth Rate", "mm/hr"),
+                    ("total_network_length", "Network Length", "mm"),
+                    ("num_junctions", "Junctions", "count"),
+                ]
+                # Add optional metrics if they exist
+                if "fractal_dimension" in run_df.columns:
+                    compare_metrics.append(("fractal_dimension", "Fractal Dimension", "Df"))
+                if "mean_tortuosity" in run_df.columns:
+                    compare_metrics.append(("mean_tortuosity", "Tortuosity", "τ"))
+
+                cols = st.columns(min(len(compare_metrics), 3))
+                for i, (col_name, display_name, unit) in enumerate(compare_metrics):
+                    if col_name not in run_df.columns:
+                        continue
+                    base_vals = baseline_df[col_name].dropna().values
+                    nn_vals = nn_df[col_name].dropna().values
+                    if len(base_vals) < 2 or len(nn_vals) < 2:
+                        continue
+
+                    t_stat_nn, p_val_nn = stats.ttest_ind(nn_vals, base_vals)
+                    base_mean = float(np.mean(base_vals))
+                    nn_mean = float(np.mean(nn_vals))
+                    pct_change = ((nn_mean - base_mean) / (abs(base_mean) + 1e-9)) * 100
+
+                    # Cohen's d
+                    pooled_std = np.sqrt((np.std(base_vals, ddof=1)**2 + np.std(nn_vals, ddof=1)**2) / 2)
+                    cohen_d = abs(nn_mean - base_mean) / (pooled_std + 1e-9)
+
+                    with cols[i % 3]:
+                        st.markdown(f"**{display_name}**")
+                        st.metric(
+                            f"NN-Optimized Mean",
+                            f"{nn_mean:.2f} {unit}",
+                            f"{pct_change:+.1f}% vs baseline"
+                        )
+                        p_display = f"{p_val_nn:.2e}" if p_val_nn < 0.001 else f"{p_val_nn:.4f}"
+                        if p_val_nn < 0.05:
+                            st.success(f"p = {p_display}  |  d = {cohen_d:.2f}")
+                        else:
+                            st.warning(f"p = {p_display}  |  d = {cohen_d:.2f}")
+
+                st.divider()
+
+                # Distribution comparison plot
+                st.markdown("#### Growth Rate Distribution: Baseline vs. NN-Optimized")
+                base_gr = baseline_df['avg_growth_rate'].dropna().values
+                nn_gr = nn_df['avg_growth_rate'].dropna().values
+
+                fig_comp = go.Figure()
+                fig_comp.add_trace(go.Histogram(x=base_gr, name=f"Baseline (n={len(base_gr)})", opacity=0.6, marker_color="#6c757d"))
+                fig_comp.add_trace(go.Histogram(x=nn_gr, name=f"NN-Optimized (n={len(nn_gr)})", opacity=0.8, marker_color="#2ecc71"))
+                fig_comp.add_vline(x=float(np.mean(base_gr)), line_dash="dash", line_color="#6c757d",
+                                   annotation_text=f"Baseline μ={np.mean(base_gr):.2f}", annotation_position="top left")
+                fig_comp.add_vline(x=float(np.mean(nn_gr)), line_dash="dash", line_color="#2ecc71",
+                                   annotation_text=f"Optimized μ={np.mean(nn_gr):.2f}", annotation_position="top right")
+                fig_comp.update_layout(
+                    barmode="overlay",
+                    xaxis_title="Growth Rate (mm/hr)", yaxis_title="Frequency",
+                    template=PLOTLY_TEMPLATE,
+                    legend=dict(orientation="h", y=1.1)
+                )
+                st.plotly_chart(fig_comp, use_container_width=True, key="stats_nn_vs_baseline_hist")
+
+                st.divider()
+
+            # --- Section 2: Literature Comparison ---
+            st.markdown("### Model vs. Literature")
+            st.markdown(f"*Analysis based on {len(run_df)} total simulation runs.*")
+
+            st.markdown("#### One-Sample t-tests (Your Model vs. Literature)")
             st.markdown("This test checks if your model's average output is *statistically different* from a known value.")
-            
+
             lit_col1, lit_col2 = st.columns(2)
-            
-            # T-test vs. AutoAnalysis_TotalLength
+
             with lit_col1:
                 lit_mean = LITERATURE_DATA["AutoAnalysis_TotalLength"]["mean"]
                 sim_data = run_df['total_network_length'].dropna()
                 t_stat, p_val = stats.ttest_1samp(sim_data, lit_mean)
-                
+
                 st.metric(f"Total Network Length (vs. {lit_mean} mm)", f"{sim_data.mean():.1f} mm", f"p-val: {p_val:.3f}")
                 if p_val < 0.05:
                     st.error(f"**Significant Difference:** Your model's mean length ({sim_data.mean():.1f}) is statistically different from the literature value ({lit_mean}).")
                 else:
                     st.success(f"**Good Match:** Your model's mean length ({sim_data.mean():.1f}) is *not* statistically different from the literature value ({lit_mean}).")
-            
-            # T-test vs. Tero_2010_MST_Ratio
+
             with lit_col2:
                 lit_mean_tero = LITERATURE_DATA["Tero_2010_MST_Ratio"]["mean"]
                 sim_data_tero = run_df['mst_ratio'].dropna()
                 t_stat_tero, p_val_tero = stats.ttest_1samp(sim_data_tero, lit_mean_tero)
-                
+
                 st.metric(f"MST Ratio (vs. {lit_mean_tero})", f"{sim_data_tero.mean():.2f}", f"p-val: {p_val_tero:.3f}")
                 if p_val_tero < 0.05:
                     st.error(f"**Significant Difference:** Your model's mean MST ratio ({sim_data_tero.mean():.2f}) is statistically different from Tero et al. ({lit_mean_tero}).")
@@ -776,13 +868,12 @@ if 'latest_result_full' in st.session_state:
                     st.success(f"**Good Match:** Your model's mean MST ratio ({sim_data_tero.mean():.2f}) is *not* statistically different from Tero et al. ({lit_mean_tero}).")
 
             st.divider()
-            
-            st.markdown("#### 2. ANOVA (Analysis of Variance)")
+
+            st.markdown("#### ANOVA (Analysis of Variance)")
             st.markdown("This test checks if changing an *input parameter* (like Model Type) had a significant effect on an *output metric* (like Growth Rate).")
-            
-            # ANOVA on Model Type vs. Growth Rate
+
             model_groups = run_df.groupby('param_model_type')['avg_growth_rate'].apply(list)
-            
+
             if len(model_groups) > 1:
                 f_val, p_val_anova = stats.f_oneway(*model_groups)
                 st.metric("ANOVA: Model Type vs. Growth Rate", f"p-val: {p_val_anova:.3f}")
@@ -791,22 +882,33 @@ if 'latest_result_full' in st.session_state:
                 else:
                     st.error("**No Significant Effect:** The 'Model Type' you chose does *not* have a statistically significant effect on the 'Average Growth Rate'.")
             else:
-                st.info("Run simulations with different 'Model Types' to enable this ANOVA test.")
+                # If NN data exists, use baseline vs optimized as groups for ANOVA
+                if has_nn and has_baseline:
+                    source_groups = run_df.groupby('source')['avg_growth_rate'].apply(list)
+                    f_val, p_val_anova = stats.f_oneway(*source_groups)
+                    st.metric("ANOVA: Baseline vs. NN-Optimized Growth Rate", f"p-val: {p_val_anova:.3f}")
+                    if p_val_anova < 0.05:
+                        st.success("**Significant Effect:** The NN optimization *does* have a statistically significant effect on the 'Average Growth Rate'.")
+                    else:
+                        st.error("**No Significant Effect:** The NN optimization does *not* have a statistically significant effect on the 'Average Growth Rate'.")
+                else:
+                    st.info("Run simulations with different 'Model Types' or use the Neural Network optimizer to enable this ANOVA test.")
 
             st.divider()
 
         st.markdown("#### Note on Statistical Tests")
         st.markdown(f"""
         <div class="info-box" style="background: var(--surface); border-color: var(--accent);">
-        You asked about **Chi-Square, t-tests, and ANOVA**. Here's how they're used:
+        <b>Chi-Square, t-tests, and ANOVA</b> — how they're used:
         <ul>
-            <li><b>t-tests</b> and <b>ANOVA</b> (which we use here) are perfect for comparing continuous data (like <i>length, rate, or time</i>) to see if there is a significant difference between group averages.</li>
-            <li>A <b>Chi-Square</b> test is used for categorical data (like <i>counts, frequencies, or proportions</i>). For example, "Did Scaffold A have a 50% success rate and Scaffold B have a 65% success rate? Is that difference significant?"</li>
+            <li><b>Independent t-tests</b>: Compare two groups (e.g., baseline vs. NN-optimized) to see if their means differ significantly.</li>
+            <li><b>One-sample t-tests</b>: Compare your model's output against a known literature value.</li>
+            <li><b>ANOVA</b>: Test whether a factor (Model Type or optimization) has a significant effect on an outcome.</li>
+            <li><b>Cohen's d</b>: Effect size — d=0.2 small, d=0.5 medium, d=0.8 large.</li>
         </ul>
-        Since your metrics are all continuous, we are using t-tests and ANOVA.
         </div>
         """, unsafe_allow_html=True)
-        
+
         st.divider()
         st.markdown("### 📜 Full Run History")
         st.dataframe(run_df)
@@ -1182,10 +1284,20 @@ if 'latest_result_full' in st.session_state:
                             st.session_state.opt_final = fp
                             fs = []
                             rng = np.random.default_rng(int(seed))
+                            best_result = None
+                            best_growth = -np.inf
                             for i in range(30):
                                 rr = run_simulation_logic(fp, model_type)
-                                fs.append(rr["metrics"]["avg_growth_rate"])
+                                gr = rr["metrics"]["avg_growth_rate"]
+                                fs.append(gr)
+                                rr["metrics"]["source"] = "nn_optimized"
+                                st.session_state.run_history.append(rr["metrics"])
+                                if gr > best_growth:
+                                    best_growth = gr
+                                    best_result = rr
                             st.session_state.opt_final_samples = np.array(fs, dtype=np.float32)
+                            # Update main dashboard so tabs 1-3 reflect NN-optimized results
+                            st.session_state.latest_result_full = best_result
                 
                 if "opt_final_samples" in st.session_state:
                     st.divider()

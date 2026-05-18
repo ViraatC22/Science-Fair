@@ -355,6 +355,17 @@ def draw_metric_lollipop(run_df, metric_col, title, color="#d62728", unit="", ba
     fig.update_layout(layout)
     return fig
 
+def _rolling_mean(y, window=5):
+    """Simple rolling mean for trend lines."""
+    if len(y) < window:
+        return y
+    cumsum = np.cumsum(np.insert(y, 0, 0))
+    rm = (cumsum[window:] - cumsum[:-window]) / window
+    # Pad the front to keep same length
+    pad = np.full(window - 1, np.nan)
+    return np.concatenate([pad, rm])
+
+
 def draw_evolution_plot(
     run_df,
     metric_col,
@@ -368,13 +379,26 @@ def draw_evolution_plot(
     template="plotly_white"
 ):
     """
-    Draws an evolution-aware plot with reference bands, annotations, and smart styling.
+    Clean evolution plot. Baseline is dimmed; NN-optimized is prominent.
+    Includes rolling-mean trend lines and proper Y-axis padding.
     """
     if run_df.empty or metric_col not in run_df.columns:
         return go.Figure()
 
     y_data = run_df[metric_col].values.astype(float)
-    x_data = run_df.index.values + 1 # 1-based index for "Runs"
+    x_data = run_df.index.values + 1
+
+    # Detect source groups
+    has_groups = 'source' in run_df.columns
+    if has_groups:
+        sources = run_df['source'].values
+        mask_baseline = sources != 'nn_optimized'
+        mask_nn = sources == 'nn_optimized'
+    else:
+        mask_baseline = np.ones(len(y_data), dtype=bool)
+        mask_nn = np.zeros(len(y_data), dtype=bool)
+
+    has_both = np.any(mask_nn) and np.any(mask_baseline)
 
     # Normalization
     is_normalized = False
@@ -382,105 +406,147 @@ def draw_evolution_plot(
         if np.max(y_data) > np.min(y_data):
             y_data = (y_data - np.min(y_data)) / (np.max(y_data) - np.min(y_data))
             is_normalized = True
-            unit = "Norm (0-1)"
-        elif np.max(y_data) != 0:
-             y_data = y_data / np.max(y_data)
-             is_normalized = True
-             unit = "Norm (Max=1)"
+            unit = "0-1"
 
     fig = go.Figure()
 
-    # Reference Band (only if not normalized, to keep context clear)
+    # Muted colors
+    grid_color = 'rgba(255,255,255,0.05)'
+    text_muted = 'rgba(255,255,255,0.4)'
+    nn_color = "#2ecc71"
+    base_color_dim = "rgba(100,120,140,0.35)"  # Dimmed baseline
+    base_color_line = "rgba(100,120,140,0.5)"
+
+    if has_both:
+        # --- Baseline: dim, thin, no markers ---
+        fig.add_trace(go.Scatter(
+            x=x_data[mask_baseline], y=y_data[mask_baseline],
+            mode='lines',
+            line=dict(color=base_color_line, width=1.5),
+            name="Baseline",
+            hovertemplate="%{y:.2f}<extra>Baseline</extra>"
+        ))
+        # Baseline trend (rolling mean)
+        if np.sum(mask_baseline) >= 3:
+            rm_base = _rolling_mean(y_data[mask_baseline], window=min(5, np.sum(mask_baseline)))
+            fig.add_trace(go.Scatter(
+                x=x_data[mask_baseline], y=rm_base,
+                mode='lines', line=dict(color=base_color_dim, width=2, dash='dot'),
+                name="Baseline Trend", showlegend=False,
+                hoverinfo='skip'
+            ))
+
+        # --- NN-Optimized: bright, thick, with markers ---
+        fig.add_trace(go.Scatter(
+            x=x_data[mask_nn], y=y_data[mask_nn],
+            mode='lines+markers',
+            line=dict(color=nn_color, width=2.5),
+            marker=dict(size=5, color=nn_color, opacity=0.8),
+            name="Optimized",
+            hovertemplate="%{y:.2f}<extra>Optimized</extra>"
+        ))
+        # NN trend (rolling mean)
+        if np.sum(mask_nn) >= 3:
+            rm_nn = _rolling_mean(y_data[mask_nn], window=min(5, np.sum(mask_nn)))
+            fig.add_trace(go.Scatter(
+                x=x_data[mask_nn], y=rm_nn,
+                mode='lines', line=dict(color=nn_color, width=3),
+                name="Optimized Trend", showlegend=False,
+                hoverinfo='skip'
+            ))
+
+        # Vertical divider
+        nn_start_x = x_data[mask_nn][0]
+        fig.add_vline(
+            x=nn_start_x - 0.5, line_dash="dot",
+            line_color="rgba(255,255,255,0.15)", line_width=1
+        )
+
+        # Mean lines — clean, minimal labels
+        base_mean = float(np.mean(y_data[mask_baseline]))
+        nn_mean = float(np.mean(y_data[mask_nn]))
+        fig.add_hline(y=base_mean, line_dash="dash", line_color=base_color_dim, line_width=1)
+        fig.add_hline(y=nn_mean, line_dash="dash", line_color=nn_color, line_width=1,
+                       opacity=0.6)
+
+    else:
+        # --- Single group ---
+        fig.add_trace(go.Scatter(
+            x=x_data, y=y_data,
+            mode='lines+markers',
+            line=dict(color=color, width=2.5),
+            marker=dict(size=6, color=color, opacity=0.9),
+            name=title, showlegend=False,
+            hovertemplate="%{y:.2f}<extra></extra>"
+        ))
+        if len(y_data) >= 3:
+            rm = _rolling_mean(y_data, window=min(5, len(y_data)))
+            fig.add_trace(go.Scatter(
+                x=x_data, y=rm,
+                mode='lines', line=dict(color=color, width=3, dash='dot'),
+                showlegend=False, hoverinfo='skip'
+            ))
+
+    # Reference band — subtle
     if ref_band and not is_normalized:
         y0, y1 = ref_band
-        # Ensure y0, y1 are within reasonable bounds of the data for visibility
-        # But actually, bands are absolute references.
         fig.add_hrect(
             y0=y0, y1=y1,
-            fillcolor=color, opacity=0.1,
-            layer="below", line_width=0,
-            annotation_text=ref_name, annotation_position="top left",
-            annotation_font_size=10, annotation_font_color=color
+            fillcolor=color, opacity=0.05,
+            layer="below", line_width=0
         )
 
-    # Main Evolution Trace
-    fig.add_trace(go.Scatter(
-        x=x_data, y=y_data,
-        mode='lines+markers',
-        line=dict(color=color, width=3, dash='solid'),
-        marker=dict(size=8, color=color, line=dict(width=1.5, color='white'), opacity=1.0),
-        name=title,
-        showlegend=False
-    ))
+    # --- Y-axis padding (±8% of range) ---
+    y_min, y_max = float(np.min(y_data)), float(np.max(y_data))
+    y_range = y_max - y_min if y_max > y_min else abs(y_max) * 0.1 + 0.1
+    y_pad = y_range * 0.08
+    y_axis_range = [y_min - y_pad, y_max + y_pad]
 
-    # Last Point Annotation
-    if len(y_data) > 0:
-        last_x = x_data[-1]
-        last_y = y_data[-1]
-        last_val_fmt = f"{last_y:.2f}" if is_normalized else f"{last_y:.1f}"
-        
-        # Delta calculation
-        delta_str = ""
-        if len(y_data) > 1:
-            prev_y = y_data[-2]
-            if abs(prev_y) > 1e-9:
-                pct_change = ((last_y - prev_y) / prev_y) * 100
-                symbol = "▲" if pct_change > 0 else "▼"
-                delta_str = f" {symbol} {abs(pct_change):.1f}%"
-        
-        # Determine text color (black or white depending on theme, but here we can force one or use auto)
-        # Using the trace color for the text is safe.
-        fig.add_annotation(
-            x=last_x, y=last_y,
-            text=f"Run {last_x}: <b>{last_val_fmt}</b><span style='font-size:10px'>{delta_str}</span>",
-            showarrow=True, arrowhead=0, ax=0, ay=-30,
-            font=dict(color=color, size=12),
-            bgcolor="rgba(255,255,255,0.8)" if "white" in template else "rgba(0,0,0,0.6)",
-            bordercolor=color, borderwidth=1, borderpad=4,
-            opacity=0.9
-        )
+    # Title: short and clean
+    full_title = f"<b>{title}</b>"
+    if unit:
+        full_title += f"  <span style='font-size:11px; color:rgba(255,255,255,0.4)'>({unit})</span>"
 
-    # Layout styling
-    full_title = f"{title} <span style='font-size:14px; opacity:0.6'>({unit})</span>" if unit else title
-    if subtitle:
-        full_title += f"<br><span style='font-size:12px; font-weight:normal; opacity:0.7'><i>{subtitle}</i></span>"
-    
-    # Grid styling
-    grid_color = 'rgba(128,128,128,0.15)'
-    if "dark" in template:
-        grid_color = 'rgba(255,255,255,0.1)'
+    # Smart x ticks
+    n_runs = len(x_data)
+    dtick = 1 if n_runs <= 15 else (5 if n_runs <= 50 else 10)
 
-    # Handle single point case specially to make it "Self-Explanatory"
     xaxis_config = dict(
-        showgrid=True, gridwidth=1, gridcolor=grid_color,
-        zeroline=False, showline=True, linecolor=grid_color,
-        tickmode='linear', dtick=1, # Force integer ticks
-        title=None
+        showgrid=False,
+        zeroline=False, showline=True, linecolor='rgba(255,255,255,0.1)',
+        tickmode='linear', dtick=dtick,
+        tickfont=dict(size=10, color=text_muted),
+        title=dict(text="Run #", font=dict(size=10, color=text_muted)) if n_runs > 1 else None
     )
-    
-    if len(y_data) == 1:
-        # If only one point, center it and provide more context
+    if n_runs == 1:
         xaxis_config['range'] = [0.5, 1.5]
         xaxis_config['tickvals'] = [1]
         xaxis_config['ticktext'] = ["Run 1"]
 
     fig.update_layout(
-        title=dict(text=full_title, font=dict(size=16)),
+        title=dict(text=full_title, font=dict(size=14), x=0.02, xanchor='left'),
         template=template,
-        margin=dict(l=20, r=20, t=50, b=30), # Increased bottom margin for subtitles
-        height=300,
+        margin=dict(l=50, r=15, t=40, b=35),
+        height=280,
         xaxis=xaxis_config,
         yaxis=dict(
-            showgrid=True, gridwidth=1.5, gridcolor=grid_color, # Stronger horizontal
+            range=y_axis_range,
+            showgrid=True, gridwidth=0.5, gridcolor=grid_color,
             zeroline=False, showline=False,
-            tickfont=dict(color='rgba(128,128,128,0.8)'),
-            title=None
+            tickfont=dict(size=10, color=text_muted),
+            title=dict(text=unit, font=dict(size=10, color=text_muted)) if unit else None
         ),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        hovermode="x unified"
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="rgba(20,20,30,0.9)", font_size=11),
+        legend=dict(
+            orientation="h", y=1.15, x=0.5, xanchor="center",
+            font=dict(size=10, color="rgba(255,255,255,0.6)"),
+            bgcolor="rgba(0,0,0,0)"
+        ) if has_both else dict(visible=False)
     )
-    
+
     return fig
 
 def draw_radar_chart(current_metrics, history_df=None, literature_data=None):
