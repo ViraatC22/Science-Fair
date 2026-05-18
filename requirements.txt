@@ -4,6 +4,8 @@ pandas
 scipy
 statsmodels
 scikit-learn
+scikit-image
+trimesh
 torch
 matplotlib
 seaborn
