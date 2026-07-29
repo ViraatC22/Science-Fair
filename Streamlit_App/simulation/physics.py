@@ -3,6 +3,8 @@ from scipy.ndimage import gaussian_filter, rotate
 from scipy import stats
 import time
 
+from backend.opt import validate_params
+
 # --- LITERATURE DATA ---
 LITERATURE_DATA = {
     "Tero_2010_MST_Ratio": {"mean": 1.75, "std": 0.30},
@@ -16,6 +18,10 @@ def generate_micropillar_geometry(params):
     """
     Generates the 3D numpy matrix for the micropillar array.
     """
+    ok, message = validate_params(params)
+    if not ok:
+        raise ValueError(message)
+
     grid_size = 60 # Main grid resolution
     scaffold_matrix = np.zeros((grid_size, grid_size, grid_size))    
     
@@ -72,12 +78,14 @@ def generate_micropillar_geometry(params):
     
     return scaffold_matrix, pillar_tops, channel_matrix
 
-def _make_fibers2d(n, density=0.65):
+def _make_fibers2d(n, density=0.65, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
     acc = np.zeros((n, n))
     for s in (2, 4, 8):
-        noise = np.random.rand(n, n) - 0.5
+        noise = rng.random((n, n)) - 0.5
         anis = gaussian_filter(noise, sigma=(s, 1))
-        ang = np.random.uniform(0, 180)
+        ang = rng.uniform(0, 180)
         rot = rotate(anis, angle=ang, reshape=False, order=1, mode='reflect')
         acc += rot
     acc = np.abs(acc)
@@ -87,19 +95,23 @@ def _make_fibers2d(n, density=0.65):
     acc = gaussian_filter(acc, sigma=1.2)
     return acc
 
-def _make_fibers3d(n, n_orients=4):
+def _make_fibers3d(n, n_orients=4, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
     vol = np.zeros((n, n, n))
     base_sig = (1, 4, 1)
     for i in range(n_orients):
-        noise = np.random.rand(n, n, n) - 0.5
+        noise = rng.random((n, n, n)) - 0.5
         sig = (base_sig[i % 3], base_sig[(i+1) % 3], base_sig[(i+2) % 3])
         vol += gaussian_filter(noise, sigma=sig)
     vol = np.abs(vol)
     vol /= (vol.max() + 1e-6)
     return vol
 
-def compute_base_metrics(params):
+def compute_base_metrics(params, rng=None):
     """Computes all shared dependent variables."""
+    if rng is None:
+        rng = np.random.default_rng()
     metrics = {}
     base_growth = (params['dmem_glucose'] / 25.0) * (params['dmem_glutamine'] / 45.0)
     ion_effect = params['ion_ca'] / 1.8 
@@ -125,8 +137,8 @@ def compute_base_metrics(params):
     metrics['total_network_length'] = 520 * (1.0 + float(params.get("initial_mass_g", 0.5))) * (0.85 + 0.35 * scaffold_effect)
     
     # Add noise
-    metrics['avg_growth_rate'] *= np.random.uniform(0.97, 1.03)
-    metrics['total_network_length'] *= np.random.uniform(0.97, 1.03)
+    metrics['avg_growth_rate'] *= rng.uniform(0.97, 1.03)
+    metrics['total_network_length'] *= rng.uniform(0.97, 1.03)
     
     metrics['num_junctions'] = int(metrics['total_network_length'] / 30.0)
     metrics['num_edges'] = int(metrics['num_junctions'] * 1.5)
@@ -146,8 +158,21 @@ def compute_base_metrics(params):
     metrics['param_stiffness'] = params['scaffold_stiffness_kPa']
     return metrics
 
-def compute_metrics(params, model_type):
-    metrics = compute_base_metrics(params)
+def compute_metrics(params, model_type, rng=None):
+    supported_models = {
+        "2.5D Surface (Pillar Tops)",
+        "3D Porous (Channel Diffusion)",
+        "3D Structured (Channel Flow)",
+    }
+    if model_type not in supported_models:
+        raise ValueError(f"unsupported model type: {model_type}")
+    params = {**params, "model_type": model_type}
+    ok, message = validate_params(params)
+    if not ok:
+        raise ValueError(message)
+    if rng is None:
+        rng = np.random.default_rng()
+    metrics = compute_base_metrics(params, rng=rng)
     
     if model_type == "2.5D Surface (Pillar Tops)":
         metrics['fractal_dimension'] = 1.9
@@ -210,29 +235,33 @@ def compute_metrics(params, model_type):
 
     return metrics
 
-def run_simulation_logic(params, model_type):
+def run_simulation_logic(params, model_type, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
     scaffold_matrix, pillar_tops, channel_matrix = generate_micropillar_geometry(params)
     
     if model_type == "2.5D Surface (Pillar Tops)":
-        fibers2d = _make_fibers2d(pillar_tops.shape[0])
+        fibers2d = _make_fibers2d(pillar_tops.shape[0], rng=rng)
         growth_data = np.clip(0.75 * pillar_tops + 1.15 * fibers2d, 0, 1.5)
         scaffold_data = scaffold_matrix 
         
     elif model_type == "3D Porous (Channel Diffusion)":
-        fibers3d = _make_fibers3d(channel_matrix.shape[0], 5)
-        rnd = gaussian_filter(np.random.rand(60, 60, 60), sigma=2)
+        fibers3d = _make_fibers3d(channel_matrix.shape[0], 5, rng=rng)
+        rnd = gaussian_filter(rng.random((60, 60, 60)), sigma=2)
         field = 0.65 + 0.35 * rnd
         growth_data = channel_matrix * np.clip(fibers3d * field, 0, 1.0)
         scaffold_data = scaffold_matrix
         
     elif model_type == "3D Structured (Channel Flow)":
-        fibers3d = _make_fibers3d(channel_matrix.shape[0], 3)
-        rnd = gaussian_filter(np.random.rand(60, 60, 60), sigma=3)
+        fibers3d = _make_fibers3d(channel_matrix.shape[0], 3, rng=rng)
+        rnd = gaussian_filter(rng.random((60, 60, 60)), sigma=3)
         field = 0.60 + 0.40 * rnd
         growth_data = channel_matrix * np.clip(fibers3d * field, 0, 1.0)
         scaffold_data = scaffold_matrix
+    else:
+        raise ValueError(f"unsupported model type: {model_type}")
     
-    metrics = compute_metrics(params, model_type)
+    metrics = compute_metrics(params, model_type, rng=rng)
     
     return {
         "params": params, "model_type": model_type, "growth_data": growth_data, 

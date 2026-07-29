@@ -43,8 +43,9 @@ The project uses:
 ### Directory Structure
 - `Streamlit_App/app/main.py` - Main Streamlit application with UI
 - `Streamlit_App/simulation/physics.py` - Physics simulation logic, scaffold geometry generation, and metric computation
-- `Streamlit_App/neural_network/predictor.py` - PyTorch neural network surrogate model (`SlimePredictor`, `ModelManager`)
-- `Streamlit_App/optimization/genetic.py` - Genetic algorithm optimizer that uses the neural network for fast fitness evaluation
+- `backend/nn.py` - PyTorch neural network surrogate model
+- `backend/opt.py` - Parameter contract, sampling, validation, and surrogate search
+- `Streamlit_App/app/main.py` - Session-level model/optimization orchestration
 
 ### Three Simulation Models
 The app supports three distinct simulation paradigms:
@@ -77,17 +78,17 @@ Metrics are the core biological/transport outputs:
 - Key metrics: `avg_growth_rate`, `total_network_length`, `permeability_kappa_X/Y/iso`, `mean_tortuosity`, `fractal_dimension`, `mst_ratio`
 
 ### Neural Network Architecture
-`SlimePredictor` in `neural_network/predictor.py`:
-- Feedforward MLP with BatchNorm and optional attention mechanism
-- Predicts 5 output metrics from 17 input parameters
-- `ModelManager` handles training loop, optimizer/scheduler, and inference
+`MLP` in `backend/nn.py`:
+- Feedforward MLP with two ReLU hidden layers
+- Predicts growth rate from 18 input parameters
+- `train_surrogate` handles scaling, training, and inference snapshots
 - Trained on synthetic data sampled from the physics simulator's metric functions
 
 ### Genetic Algorithm
-`GeneticOptimizer` in `optimization/genetic.py`:
-- Fitness = z-score of `avg_growth_rate` vs literature data (`LITERATURE_DATA`)
-- Uses neural network predictions for fast evaluation when trained
-- Returns best parameter set after evolution
+Optimization helpers in `backend/opt.py`:
+- Validate candidates against parameter ranges and the 200 mm domain
+- Use the neural surrogate for fast global candidate search
+- Return the highest predicted-growth feasible parameter set
 
 ### Literature Validation
 The app compares simulation outputs to published data:
@@ -105,8 +106,8 @@ Streamlit session state stores:
 - `latest_result_full` - Most recent simulation result (metrics + params + visualization data)
 
 ### Reproducibility
-- Seeds controlled via `ModelManager.set_seed()` and stored with each run
-- Deterministic mode available for PyTorch operations
+- Simulation noise is controlled by an explicit NumPy generator
+- PyTorch and data splitting are seeded during surrogate training
 - All run parameters logged to `run_history`
 
 ### Visualization Data

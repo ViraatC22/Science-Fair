@@ -107,7 +107,7 @@ PARAM_DISPLAY_NAMES = {
 }
 
 class ModelManager:
-    def __init__(self, input_dim=17, output_dim=1):
+    def __init__(self, input_dim=len(OPT_ORDER), output_dim=1):
         self.input_dim = input_dim
         self.output_dim = output_dim
 
@@ -124,7 +124,7 @@ class GeneticOptimizer:
             p["model_type"] = model_type
             ok, _ = opt_validate_params(p)
             if ok:
-                r = run_metrics_only(p, model_type)
+                r = run_metrics_only(p, model_type, rng=rng)
                 y = r["metrics"]["avg_growth_rate"]
                 if best is None or y > best[0]:
                     best = (y, p)
@@ -141,7 +141,7 @@ def train_initial_model(model_manager, n_samples=500):
         p["model_type"] = "3D Structured (Channel Flow)"
         ok, _ = opt_validate_params(p)
         if ok:
-            r = run_metrics_only(p, p["model_type"])
+            r = run_metrics_only(p, p["model_type"], rng=rng)
             y = r["metrics"]["avg_growth_rate"]
             X_list.append(opt_to_vector(p))
             y_list.append(y)
@@ -155,13 +155,13 @@ def train_initial_model(model_manager, n_samples=500):
         loss = torch.nn.functional.mse_loss(pred, torch.tensor(y))
     return float(loss.detach().cpu().numpy())
 
-def run_metrics_only(params, model_type):
-    m = compute_metrics(params, model_type)
+def run_metrics_only(params, model_type, rng=None):
+    m = compute_metrics(params, model_type, rng=rng)
     return {"params": params, "model_type": model_type, "metrics": m}
 
 # --- INITIALIZE MODULES IN SESSION STATE ---
 if 'model_manager' not in st.session_state:
-    st.session_state.model_manager = ModelManager(input_dim=17, output_dim=5)
+    st.session_state.model_manager = ModelManager(input_dim=len(OPT_ORDER), output_dim=5)
 
 if 'optimizer' not in st.session_state:
     st.session_state.optimizer = GeneticOptimizer(st.session_state.model_manager)
@@ -192,7 +192,7 @@ def display_structured_flow_summary(metrics, params):
     
     st.divider()
     st.markdown('<div class="success-box">', unsafe_allow_html=True)
-    st.markdown(f"**🧠 AI Interpretation:** This structured grid creates anisotropic flow, with Kx ({metrics['permeability_kappa_X']:.1e}) and Ky ({metrics['permeability_kappa_Y']:.1e}) dominating transport.")
+    st.markdown(f"**Model interpretation:** This structured grid creates anisotropic flow in the simulation, with Kx ({metrics['permeability_kappa_X']:.1e}) and Ky ({metrics['permeability_kappa_Y']:.1e}) dominating modeled transport.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 def display_porous_diffusion_summary(metrics, params):
@@ -218,7 +218,7 @@ def display_porous_diffusion_summary(metrics, params):
     
     st.divider()
     st.markdown('<div class="success-box">', unsafe_allow_html=True)
-    st.markdown(f"**🧠 AI Interpretation:** This geometry, modeled with diffusion, shows strong isotropic transport (κ ≈ {metrics['permeability_kappa_iso']:.1e}). Tortuosity is moderate ({metrics['mean_tortuosity']:.2f}).")
+    st.markdown(f"**Model interpretation:** This geometry shows strong isotropic transport in the diffusion model (κ ≈ {metrics['permeability_kappa_iso']:.1e}). Modeled tortuosity is {metrics['mean_tortuosity']:.2f}.")
     st.markdown('</div>', unsafe_allow_html=True)
 
 def display_pillar_top_summary(metrics, params):
@@ -243,7 +243,7 @@ def display_pillar_top_summary(metrics, params):
 
     st.divider()
     st.markdown('<div class="success-box">', unsafe_allow_html=True)
-    st.markdown(f"**🧠 AI Interpretation:** Growth is confined to the 2D pillar tops, showing strong adhesion ({metrics['pillar_adhesion_index']:.2f}) and a high fractal dimension ({metrics['fractal_dimension']:.2f}).")
+    st.markdown(f"**Model interpretation:** Simulated growth is confined to the 2D pillar tops, with an adhesion index of {metrics['pillar_adhesion_index']:.2f} and a fractal dimension of {metrics['fractal_dimension']:.2f}.")
     st.markdown('</div>', unsafe_allow_html=True)
     
 # --- HEX TO RGBA for CSS ---
@@ -334,7 +334,15 @@ with st.sidebar:
         cacl_g = st.number_input("Calcium Chloride (g)", 0.0, 2.0, 0.3, 0.05)
     
     st.divider()
-    run_button = st.button("▶️ Run Simulation", type="primary", use_container_width=True)
+    simulation_seed = st.number_input(
+        "Simulation Seed",
+        min_value=0,
+        max_value=1_000_000,
+        value=42,
+        step=1,
+        help="Reuse a seed to reproduce the same growth field and metrics.",
+    )
+    run_button = st.button("▶️ Run Simulation", type="primary", width="stretch")
 
 # --- THEME INJECTION ---
 _t = _theme_map.get(color_scheme, _theme_map["Ocean (Blue/Teal)"])
@@ -381,7 +389,7 @@ div[role="radiogroup"] label[data-checked="true"] p {{ color: white !important; 
 st.markdown(f"""
 <div class="hero">
   <h1>🦠 3D Physarum Simulation Platform</h1>
-  <p>An advanced digital twin for modeling slime mold growth on engineered scaffolds.</p>
+  <p>An exploratory simulation for studying slime-mold growth hypotheses on engineered scaffolds.</p>
   <p style="margin-top:8px;color:{_t['secondary']}; opacity: 0.7;">Configure your full experimental query in the sidebar and run the simulation.</p>
 </div>
 """, unsafe_allow_html=True)
@@ -397,6 +405,10 @@ if not run_button and not st.session_state.run_history:
     1.  Select a **Model Type** from the sidebar (e.g., "3D Structured").
     2.  Configure the full set of **Scaffold, Biological, and Nutrient** parameters.
     3.  Click **"▶️ Run Simulation"** to generate the results dashboard.
+
+    The outputs are synthetic and hypothesis-generating. They are not experimental
+    measurements, a validated biological digital twin, or a substitute for wet-lab
+    verification.
     """)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -423,9 +435,18 @@ if run_button:
         "light_lumens": light_lumens,
         "gel_ratio": f"{gel_g}g Gel : {dmem_ml}ml DMEM : {alg_g}g Alg : {cacl_g}g CaCl2"
     }
+
+    valid, validation_message = opt_validate_params(parameters)
+    if not valid:
+        st.error(f"Cannot run simulation: {validation_message}")
+        st.stop()
     
     with st.spinner("Running simulation... (Computing specialized metrics...)"):
-        new_result = run_simulation_logic(parameters, model_type)
+        new_result = run_simulation_logic(
+            parameters,
+            model_type,
+            rng=np.random.default_rng(int(simulation_seed)),
+        )
     
     new_result['metrics']['source'] = 'manual'
     st.session_state.run_history.append(new_result['metrics']) # Append metrics to history
@@ -506,7 +527,7 @@ if 'latest_result_full' in st.session_state:
                     scene=dict(xaxis_title="X", yaxis_title="Y", zaxis_title="Z (Depth)"),
                     legend=dict(bgcolor="var(--surface)", bordercolor="var(--surface-border)", borderwidth=1)
                 )
-            st.plotly_chart(fig, use_container_width=True, key="viz_main_fig")
+            st.plotly_chart(fig, width="stretch", key="viz_main_fig")
 
     if selected_tab == tabs[1]:
         st.markdown(f"## Advanced Diagnostics: {model_type}")
@@ -562,7 +583,7 @@ if 'latest_result_full' in st.session_state:
                     unit="mm", color="#5b8bd4",
                     normalize=normalize, template=PLOTLY_TEMPLATE
                 )
-                st.plotly_chart(fig1, use_container_width=True, key="diag_net_len")
+                st.plotly_chart(fig1, width="stretch", key="diag_net_len")
 
             with col2:
                 fig2 = vis.draw_evolution_plot(
@@ -570,7 +591,7 @@ if 'latest_result_full' in st.session_state:
                     unit="count", color="#5b8bd4",
                     normalize=normalize, template=PLOTLY_TEMPLATE
                 )
-                st.plotly_chart(fig2, use_container_width=True, key="diag_junctions")
+                st.plotly_chart(fig2, width="stretch", key="diag_junctions")
 
             col3, col4 = st.columns(2)
 
@@ -582,7 +603,7 @@ if 'latest_result_full' in st.session_state:
                         ref_band=(1.3, 1.7),
                         normalize=normalize, template=PLOTLY_TEMPLATE
                     )
-                    st.plotly_chart(fig3, use_container_width=True, key="diag_fractal")
+                    st.plotly_chart(fig3, width="stretch", key="diag_fractal")
                 else:
                     st.info("Fractal dimension not available for this model.")
 
@@ -594,7 +615,7 @@ if 'latest_result_full' in st.session_state:
                         ref_band=(1.0, 1.3),
                         normalize=normalize, template=PLOTLY_TEMPLATE
                     )
-                    st.plotly_chart(fig4, use_container_width=True, key="diag_tortuosity")
+                    st.plotly_chart(fig4, width="stretch", key="diag_tortuosity")
                 else:
                     st.info("Tortuosity not available for this model.")
         
@@ -832,7 +853,7 @@ if 'latest_result_full' in st.session_state:
                     template=PLOTLY_TEMPLATE,
                     legend=dict(orientation="h", y=1.1)
                 )
-                st.plotly_chart(fig_comp, use_container_width=True, key="stats_nn_vs_baseline_hist")
+                st.plotly_chart(fig_comp, width="stretch", key="stats_nn_vs_baseline_hist")
 
                 st.divider()
 
@@ -964,7 +985,7 @@ if 'latest_result_full' in st.session_state:
                         p["model_type"] = model_type
                         ok, msg = opt_validate_params(p)
                         if ok:
-                            r = run_metrics_only(p, model_type)
+                            r = run_metrics_only(p, model_type, rng=rng)
                             y = r["metrics"]["avg_growth_rate"]
                             recs.append({"params": p, "metrics": r["metrics"], "y": y})
                             X_list.append(opt_to_vector(p))
@@ -982,7 +1003,7 @@ if 'latest_result_full' in st.session_state:
                     st.session_state.opt_candidate = best[1]
                     cand = []
                     for i in range(20):
-                        rr = run_metrics_only(best[1], model_type)
+                        rr = run_metrics_only(best[1], model_type, rng=rng)
                         cand.append(rr["metrics"]["avg_growth_rate"])
                     st.session_state.opt_candidate_samples = np.array(cand, dtype=np.float32)
                 
@@ -1035,7 +1056,7 @@ if 'latest_result_full' in st.session_state:
                         template=PLOTLY_TEMPLATE,
                         legend=dict(orientation="h", y=1.1)
                     )
-                    st.plotly_chart(fig, use_container_width=True, key="nn_candidate_hist")
+                    st.plotly_chart(fig, width="stretch", key="nn_candidate_hist")
                     
                     # --- NEW: Feature Importance ---
                     st.divider()
@@ -1249,7 +1270,7 @@ if 'latest_result_full' in st.session_state:
                             )
                         )
                         
-                        st.plotly_chart(fig_imp, use_container_width=True, key="nn_feature_importance")
+                        st.plotly_chart(fig_imp, width="stretch", key="nn_feature_importance")
 
                     st.divider()
                     st.markdown("### 🎛️ Recommended Parameters")
@@ -1271,7 +1292,7 @@ if 'latest_result_full' in st.session_state:
                     st.markdown("<br>", unsafe_allow_html=True)
                     col_conf, col_dummy = st.columns([1, 2])
                     with col_conf:
-                        confirm = st.button("✅ Apply These Parameters", type="primary", key="nn_opt_confirm", use_container_width=True)
+                        confirm = st.button("✅ Apply These Parameters", type="primary", key="nn_opt_confirm", width="stretch")
                     
                     if confirm:
                         fp = {k: float(sliders[k]) for k in sliders}
@@ -1287,7 +1308,7 @@ if 'latest_result_full' in st.session_state:
                             best_result = None
                             best_growth = -np.inf
                             for i in range(30):
-                                rr = run_simulation_logic(fp, model_type)
+                                rr = run_simulation_logic(fp, model_type, rng=rng)
                                 gr = rr["metrics"]["avg_growth_rate"]
                                 fs.append(gr)
                                 rr["metrics"]["source"] = "nn_optimized"
@@ -1327,7 +1348,7 @@ if 'latest_result_full' in st.session_state:
                     fig2.add_vline(x=mb, line_dash="dash", line_color="gray", annotation_text="Base Mean")
                     fig2.add_vline(x=mf, line_dash="dash", line_color="green", annotation_text="Final Mean")
                     
-                    st.plotly_chart(fig2, use_container_width=True, key="nn_final_hist")
+                    st.plotly_chart(fig2, width="stretch", key="nn_final_hist")
                     
                     st.success(f"**Success!** The optimized parameters achieved a mean growth rate of **{mf:.2f} mm/hr**, compared to the baseline of **{mb:.2f} mm/hr**.")
                     
@@ -1388,7 +1409,7 @@ if 'latest_result_full' in st.session_state:
                             view_mode=("presentation" if view_mode_ui == "Presentation" else "analysis"),
                             palette="colorblind",
                         )
-                        st.plotly_chart(fig4, use_container_width=True, key="nn_nn_viz")
+                        st.plotly_chart(fig4, width="stretch", key="nn_nn_viz")
 
     if selected_tab == tabs[4]:
         st.markdown("## Export")
@@ -1678,10 +1699,10 @@ if 'latest_result_full' in st.session_state:
                         with zipfile.ZipFile(bio_zip, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=int(comp_level)) as zf:
                             for fn, mt, by in files:
                                 zf.writestr(fn, by)
-                        st.download_button("Download bundle", bio_zip.getvalue(), "export_bundle.zip", "application/zip", use_container_width=True, key="export_download_zip")
+                        st.download_button("Download bundle", bio_zip.getvalue(), "export_bundle.zip", "application/zip", width="stretch", key="export_download_zip")
                     else:
                         fn, mt, by = files[0]
-                        st.download_button("Download file", by, fn, mt, use_container_width=True, key="export_download_single")
+                        st.download_button("Download file", by, fn, mt, width="stretch", key="export_download_single")
 
 # --- FOOTER ---
 st.divider()

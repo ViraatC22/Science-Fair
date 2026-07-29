@@ -1,15 +1,1 @@
-streamlit
-jupyter
-numpy
-pandas
-scipy
-statsmodels
-scikit-learn
-torch
-matplotlib
-seaborn
-plotly
-ipywidgets
-networkx
-nbconvert
-nbformat
+-r ../requirements.txt

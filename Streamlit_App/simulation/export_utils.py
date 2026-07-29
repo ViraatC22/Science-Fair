@@ -19,6 +19,16 @@ def generate_heightmap_mesh(data_matrix, floor_threshold=0.8, voxel_size_mm=1.0,
     Returns:
         trimesh.Trimesh: The watertight mesh.
     """
+    data_matrix = np.asarray(data_matrix, dtype=float)
+    if data_matrix.ndim != 2 or min(data_matrix.shape, default=0) < 2:
+        raise ValueError("heightmap data must be a two-dimensional array of at least 2x2")
+    if not np.isfinite(data_matrix).all():
+        raise ValueError("heightmap data must contain only finite values")
+    if not np.isfinite([floor_threshold, voxel_size_mm, z_scale, base_z]).all():
+        raise ValueError("mesh settings must contain only finite values")
+    if voxel_size_mm <= 0 or z_scale <= 0:
+        raise ValueError("voxel_size_mm and z_scale must be positive")
+
     # 1. Data Normalization ("One Matrix" Rule)
     # Clamp data to the floor threshold
     height_map = np.maximum(data_matrix, floor_threshold)
@@ -180,14 +190,29 @@ def generate_improved_mesh(data_matrix, voxel_size_mm=1.0, smoothing_sigma=0.4, 
     Returns:
         trimesh.Trimesh: The processed mesh object.
     """
+    data_matrix = np.asarray(data_matrix, dtype=float)
+    if data_matrix.ndim != 3 or min(data_matrix.shape, default=0) < 2:
+        raise ValueError("voxel data must be a three-dimensional array with each side at least 2")
+    if not np.isfinite(data_matrix).all():
+        raise ValueError("voxel data must contain only finite values")
+    if voxel_size_mm <= 0 or smoothing_sigma < 0:
+        raise ValueError("voxel_size_mm must be positive and smoothing_sigma cannot be negative")
+    if not isinstance(upsample_factor, int) or upsample_factor < 1:
+        raise ValueError("upsample_factor must be a positive integer")
+    if target_faces is not None and target_faces < 4:
+        raise ValueError("target_faces must be at least 4")
+
     if is_binary:
+        binary_mask = data_matrix > 0
+        if binary_mask.all() or not binary_mask.any():
+            raise ValueError("binary voxel data must contain both solid and empty cells")
         # 1. Convert to Signed Distance Field (SDF)
         # distance_transform_edt computes distance to the nearest zero (background)
         # We want solid to be positive, void to be negative.
         # dist_inside: distance to nearest void (inside solid)
-        dist_inside = nd.distance_transform_edt(data_matrix)
+        dist_inside = nd.distance_transform_edt(binary_mask)
         # dist_outside: distance to nearest solid (inside void)
-        dist_outside = nd.distance_transform_edt(1 - data_matrix)
+        dist_outside = nd.distance_transform_edt(~binary_mask)
         
         # SDF: Positive inside, negative outside
         data_field = dist_inside - dist_outside
@@ -196,6 +221,8 @@ def generate_improved_mesh(data_matrix, voxel_size_mm=1.0, smoothing_sigma=0.4, 
         # Use the continuous field directly
         data_field = data_matrix
         level = iso_level
+        if not float(data_field.min()) < level < float(data_field.max()):
+            raise ValueError("iso_level must fall strictly within the voxel data range")
     
     # NEW: Upsampling for Detail Preservation
     if upsample_factor > 1:
@@ -210,6 +237,9 @@ def generate_improved_mesh(data_matrix, voxel_size_mm=1.0, smoothing_sigma=0.4, 
         field_smooth = nd.gaussian_filter(data_field, sigma=smoothing_sigma)
     else:
         field_smooth = data_field
+
+    if not float(field_smooth.min()) < level < float(field_smooth.max()):
+        raise ValueError("smoothing removed the requested isosurface")
         
     # 3. Marching Cubes
     # spacing defines the physical dimensions of the voxel
@@ -323,4 +353,6 @@ def calculate_voxel_size(params, grid_size=60):
     # This implies 200.0 represents the full scale of the grid dimension in mm?
     # Or rather, the grid represents a 200mm box?
     # Let's assume the domain size is 200mm for now based on the code logic.
+    if not isinstance(grid_size, int) or grid_size <= 0:
+        raise ValueError("grid_size must be a positive integer")
     return 200.0 / float(grid_size)

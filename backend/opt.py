@@ -1,5 +1,4 @@
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 
 ORDER = [
     "pillar_count",
@@ -21,6 +20,9 @@ ORDER = [
     "ion_ca",
     "light_lumens",
 ]
+
+INTEGER_PARAMS = {"pillar_count", "replenish_freq_hr"}
+DOMAIN_SIZE_MM = 200.0
 
 PARAM_RANGES = {
     "pillar_count": (4, 20),
@@ -44,25 +46,52 @@ PARAM_RANGES = {
 }
 
 def sample_params(rng):
-    p = {}
-    for k in ORDER:
-        lo, hi = PARAM_RANGES[k]
-        if k == "pillar_count" or k == "replenish_freq_hr":
-            p[k] = int(rng.integers(int(lo), int(hi)+1))
-        else:
-            p[k] = float(rng.uniform(lo, hi))
-    return p
+    for _ in range(1_000):
+        p = {}
+        for k in ORDER:
+            lo, hi = PARAM_RANGES[k]
+            if k in INTEGER_PARAMS:
+                p[k] = int(rng.integers(int(lo), int(hi)+1))
+            else:
+                p[k] = float(rng.uniform(lo, hi))
+        if validate_params(p)[0]:
+            return p
+    raise RuntimeError("could not sample a feasible parameter set")
 
 def validate_params(p):
-    if p["channel_node_size_mm"] > p["channel_width_mm"]:
+    missing = [key for key in ORDER if key not in p]
+    if missing:
+        return False, f"missing required parameters: {', '.join(missing)}"
+
+    normalized = {}
+    for key in ORDER:
+        try:
+            value = float(p[key])
+        except (TypeError, ValueError):
+            return False, f"{key} must be numeric"
+        if not np.isfinite(value):
+            return False, f"{key} must be finite"
+        lo, hi = PARAM_RANGES[key]
+        if value < lo or value > hi:
+            return False, f"{key} must be between {lo} and {hi}"
+        if key in INTEGER_PARAMS and not value.is_integer():
+            return False, f"{key} must be an integer"
+        normalized[key] = value
+
+    if normalized["channel_node_size_mm"] > normalized["channel_width_mm"]:
         return False, "channel_node_size_mm must be ≤ channel_width_mm"
-    if p["pillar_count"] < 4 or p["pillar_count"] > 20:
-        return False, "pillar_count out of range"
-    if p["pillar_size_mm"] + p["channel_width_mm"] > 80.0:
-        return False, "pillar_size_mm + channel_width_mm too large"
+    footprint = (
+        normalized["pillar_count"] * normalized["pillar_size_mm"]
+        + (normalized["pillar_count"] + 1) * normalized["channel_width_mm"]
+    )
+    if footprint > DOMAIN_SIZE_MM:
+        return False, f"scaffold footprint ({footprint:.1f} mm) exceeds the {DOMAIN_SIZE_MM:.0f} mm domain"
     return True, "ok"
 
 def to_vector(p):
+    ok, message = validate_params(p)
+    if not ok:
+        raise ValueError(message)
     return np.array([float(p[k]) for k in ORDER], dtype=np.float32)
 
 def predict(model, scaler, X):
